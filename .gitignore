@@ -1,0 +1,22 @@
+# Useless files
+**/*.log
+**/*.log.*
+test*.js
+tmp/*
+epubs/*
+
+# Dependency directories
+package-lock.json
+node_modules/
+
+# Environments
+.env*
+
+# Eslint cache
+.eslintcache
+
+# Mac OS files
+.DS_Store
+
+# Wallet file
+wallet*
