@@ -1,7 +1,7 @@
 <div align="center">
    <h1 align="center">The Babel Library</h1>
    <br>
-   <img src="/images/cover.png" width="40%">
+   <img src="/images/cover.png" width="50%">
 </div>
 
 <br>
