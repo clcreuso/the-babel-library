@@ -1,7 +1,15 @@
-![cover project](images/cover.png)
+<div align="center">
 
-# The Babel Library
+<h1 align="center">The Babel Library</h1>
 
+<br>
+
+<img src="/images/cover.jpg" width="50%">
+
+<br>
+
+</div>
+   
 The Babel Library is a Node.js script that translates EPUB files from one language to another using the OpenAI API. It leverages the power of artificial intelligence to provide automated translation capabilities for EPUB books.
 
 ## Prerequisites
