@@ -1,5 +1,11 @@
-# The Babel Library
+<div align="center">
 
+<h1 align="center">The Babel Library</h1>
+
+![主界面](./images/cover.png)
+
+</div>
+   
 The Babel Library is a Node.js script that translates EPUB files from one language to another using the OpenAI API. It leverages the power of artificial intelligence to provide automated translation capabilities for EPUB books.
 
 ## Prerequisites
