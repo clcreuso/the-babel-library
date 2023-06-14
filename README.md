@@ -2,7 +2,11 @@
 
 <h1 align="center">The Babel Library</h1>
 
-![主界面](./images/cover.png)
+<br>
+
+<img src="/images/cover.jpg" width="50%">
+
+<br>
 
 </div>
    
