@@ -2,17 +2,18 @@
 
 import Logger from './config/modules/logger.js';
 
+import Database from './objects/Database.js';
 import EPUB from './objects/interfaces/EPUB.js';
 
 const epub = new EPUB({
-  path: '/Users/rebrain/Work/Personal/TheBabelLibrary/epubs/Chess Story.epub',
+  path: '/path/to/your/epub/file.epub',
   source: 'English',
   destination: 'French',
 });
 
 const write = () => {
   epub.on('writed', () => {
-    process.exit(0);
+    setTimeout(() => process.exit(0), 5000);
   });
 
   epub.write();
@@ -34,16 +35,18 @@ const parse = () => {
   epub.parse();
 };
 
-const extract = () => {
-  epub.on('extracted', () => {
+const init = () => {
+  epub.on('initiated', () => {
     parse();
   });
 
-  epub.extract();
+  epub.init();
 };
 
-(() => {
-  extract();
+(async () => {
+  await Database.init();
+
+  init();
 })();
 
 setInterval(() => Logger.info(epub.getStatus()), 5000);

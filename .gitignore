@@ -2,6 +2,7 @@
 **/*.log
 **/*.log.*
 test*.js
+db/*
 tmp/*
 epubs/*
 

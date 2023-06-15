@@ -14,6 +14,8 @@ import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { EventEmitter } from 'events';
 import { Configuration, OpenAIApi } from 'openai';
 
+import Database from '../Database.js';
+
 import Logger from '../../config/modules/logger.js';
 
 dotenv.config();
@@ -67,16 +69,14 @@ export default class EpubInterface extends EventEmitter {
     return `${this.epub.metadata.title} - ${this.epub.metadata.creator} (${this.getIsoCode(lang)})`;
   }
 
-  getFileMD5() {
+  getFileUUID() {
     const fileContent = fs.readFileSync(this.path);
 
-    const hash = crypto.createHash('md5').update(fileContent).digest('hex');
-
-    return hash;
+    return crypto.createHash('md5').update(fileContent).digest('hex');
   }
 
   getRootPath() {
-    return `./tmp/${this.epub.metadata.UUID || this.epub.metadata.ISBN || this.getFileMD5()}`;
+    return `./tmp/${this.getFileUUID()}`;
   }
 
   getFilePath(path) {
@@ -119,6 +119,10 @@ export default class EpubInterface extends EventEmitter {
     return !limit;
   }
 
+  isAlreadyTranslated(path, uuid) {
+    return this.translations.files[path]?.[uuid] !== undefined;
+  }
+
   /** **********************************************************************************************
    **                                            Parse                                            **
    ********************************************************************************************** */
@@ -130,14 +134,18 @@ export default class EpubInterface extends EventEmitter {
 
     Object.keys(this.files).forEach((path) => {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
-        if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
+        if (this.isAlreadyTranslated(path, uuid)) {
+          Logger.info(`${this.getInfos()} - ALREADY_TRANSLATED`, { path, uuid });
+        } else {
+          if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
 
-        this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
+          this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
 
-        this.queries[id].data[path] ||= {};
-        this.queries[id].data[path][uuid] = text;
+          this.queries[id].data[path] ||= {};
+          this.queries[id].data[path][uuid] = text;
 
-        if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
+          if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
+        }
       });
     });
   }
@@ -215,38 +223,24 @@ export default class EpubInterface extends EventEmitter {
     };
   }
 
-  hasSameKeys(obj1, obj2) {
-    const arr1 = Object.keys(obj1);
-    const arr2 = Object.keys(obj2);
-
-    return _.every(arr1, (el) => arr2.includes(el)) && _.every(arr2, (el) => arr1.includes(el));
-  }
-
-  isValidTranslations(data, response) {
-    if (!this.hasSameKeys(data, response)) return false;
-
-    return _.every(Object.keys(data), (key) => this.hasSameKeys(data[key], response[key]));
-  }
-
   addTranslation(data, query) {
     try {
       const translations = JSON.parse(data.choices[0].message.content);
 
-      if (!this.isValidTranslations(query.data, translations)) {
-        Logger.error(`${this.getInfos()} - INVALID_TRANSLATION`);
-
-        throw new Error('INVALID_TRANSLATION');
-      }
-
       Object.keys(translations).forEach((file) => {
-        translations[file].toto = 9;
         Object.entries(translations[file]).forEach(([uuid, value]) => {
           this.translations.files[file] ||= { count: 0 };
           this.translations.files[file][uuid] = value;
+
+          delete query.data[file][uuid];
         });
+
+        if (_.isEmpty(query.data[file])) delete query.data[file];
       });
 
-      query.finish = true;
+      Database.addTranslations(this.translations.destination, translations);
+
+      if (_.isEmpty(query.data)) query.finish = true;
 
       Logger.info(`${this.getInfos()} - SUCCESS_QUERY ${query.id}`);
     } catch (error) {
@@ -316,6 +310,8 @@ export default class EpubInterface extends EventEmitter {
 
   translateFiles() {
     Object.entries(this.translations.files).forEach(([path, translations]) => {
+      translations.count = 0;
+
       const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
 
       this.translateFile(jsdom.window.document.body, translations);
@@ -368,24 +364,28 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                           Extract                                           **
+   **                                            Init                                             **
    ********************************************************************************************** */
 
-  rmdir(path) {
-    if (!fs.existsSync(path)) return;
+  extractEpub() {
+    const rootPath = this.getRootPath();
 
-    fs.rmSync(path, { recursive: true, force: true });
+    if (fs.existsSync(rootPath)) {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+
+    this.epub.zip.admZip.extractAllTo(rootPath, true);
   }
 
-  extract() {
+  init() {
     this.epub = new EPUB(this.path);
 
-    this.epub.on('end', () => {
-      this.rmdir(this.getRootPath());
+    this.epub.on('end', async () => {
+      this.extractEpub();
 
-      this.epub.zip.admZip.extractAllTo(this.getRootPath(), true);
+      this.translations.files = Database.getTranslations(this.translations.destination);
 
-      this.emit('extracted');
+      this.emit('initiated');
     });
 
     this.epub.parse();
