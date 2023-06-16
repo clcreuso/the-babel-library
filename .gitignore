@@ -4,7 +4,7 @@
 test*.js
 db/*
 tmp/*
-epubs/*
+epubs/*.epub
 
 # Dependency directories
 package-lock.json
