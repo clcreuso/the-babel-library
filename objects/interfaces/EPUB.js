@@ -2,16 +2,19 @@
 
 import _ from 'lodash';
 import fs from 'fs';
-import zip from 'archiver';
 import EPUB from 'epub';
+import zip from 'archiver';
 import dotenv from 'dotenv';
+import prompt from 'prompt';
 import crypto from 'crypto';
+import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
 import prettier from 'prettier';
 
 import { JSDOM } from 'jsdom';
-import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { EventEmitter } from 'events';
+import { isWithinTokenLimit } from 'gpt-tokenizer';
+import { createCanvas, loadImage } from 'canvas';
 import { Configuration, OpenAIApi } from 'openai';
 
 import Database from '../Database.js';
@@ -32,6 +35,8 @@ export default class EpubInterface extends EventEmitter {
 
     this.path = params.path;
 
+    this.metadata = {};
+
     this.translations = {
       source: params.source || 'English',
       destination: params.destination || 'English',
@@ -51,10 +56,16 @@ export default class EpubInterface extends EventEmitter {
     return `EPUB (${this.getFilename()})`;
   }
 
-  getStatus() {
-    return `EPUB (${this.getFilename()}) - STATUS ${
-      _.filter(this.queries, (query) => query.finish).length
-    }/${this.queries.length}`;
+  getRootPath() {
+    return `./tmp/${this.getFileUUID()}`;
+  }
+
+  getFilePath(path) {
+    return `${this.getRootPath()}/${path}`;
+  }
+
+  getCoverPath() {
+    return this.epub.manifest[this.epub.metadata.cover]?.href;
   }
 
   getIsoCode(language) {
@@ -63,10 +74,10 @@ export default class EpubInterface extends EventEmitter {
     return code ? code.toLowerCase() : null;
   }
 
-  getFilename(type = 'source') {
-    const lang = type === 'source' ? this.translations.source : this.translations.destination;
-
-    return `${this.epub.metadata.title} - ${this.epub.metadata.creator} (${this.getIsoCode(lang)})`;
+  getStatus() {
+    return `EPUB (${this.getFilename()}) - STATUS ${
+      _.filter(this.queries, (query) => query.finish).length
+    }/${this.queries.length}`;
   }
 
   getFileUUID() {
@@ -75,12 +86,20 @@ export default class EpubInterface extends EventEmitter {
     return crypto.createHash('md5').update(fileContent).digest('hex');
   }
 
-  getRootPath() {
-    return `./tmp/${this.getFileUUID()}`;
+  getFilename(type = 'source') {
+    const iso = this.getIsoCode(this.translations[type]);
+    const title = this.metadata.title || this.epub.metadata.title;
+    const creator = this.metadata.creator || this.epub.metadata.creator;
+
+    return `${title} - ${creator} (${iso})`;
   }
 
-  getFilePath(path) {
-    return `${this.getRootPath()}/${path}`;
+  getQuery() {
+    return _.find(this.queries, (query) => {
+      if (query.finish || query.waiting) return false;
+
+      return true;
+    });
   }
 
   getFiles(dirpath, result = []) {
@@ -95,9 +114,39 @@ export default class EpubInterface extends EventEmitter {
     return result;
   }
 
+  getQueryParams(query) {
+    return {
+      model: 'gpt-3.5-turbo-0613',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Context:`,
+            `- You are translating the content of a book from '${this.translations.source}' to '${this.translations.destination}'`,
+            `Rules:`,
+            `- The content is in JSON format`,
+            `- Translate UNIQUELY the values of the JSON`,
+            `- NOT translate anything in JSON keys (filepath and uuid)`,
+            `- Preserve spaces in the string values`,
+            `- The response should be formatted as the same JSON structure`,
+            `Book:`,
+            `- Title: ${JSON.stringify(this.epub.metadata.title)}`,
+            `- Author: ${JSON.stringify(this.epub.metadata.creator)}`,
+            `Content:`,
+            JSON.stringify(query.data),
+          ].join('\n'),
+        },
+      ],
+    };
+  }
+
   /** **********************************************************************************************
    **                                           Helpers                                           **
    ********************************************************************************************** */
+
+  writeFile(path, content) {
+    fs.writeFileSync(path, content, { encoding: 'utf8' });
+  }
 
   readFile(path) {
     const buffer = fs.readFileSync(path);
@@ -105,12 +154,12 @@ export default class EpubInterface extends EventEmitter {
     return buffer.toString('utf8');
   }
 
-  writeFile(path, content) {
-    fs.writeFileSync(path, content, { encoding: 'utf8' });
-  }
-
   HasTextTranslate(text) {
     return /[a-zA-Z]/.test(text);
+  }
+
+  hasFinishQueries() {
+    return this.queries.every((query) => query.finish);
   }
 
   hasFullyQuery(data) {
@@ -171,13 +220,21 @@ export default class EpubInterface extends EventEmitter {
     const paths = this.getFiles(this.getRootPath());
 
     paths.forEach((path) => {
-      if (!path.endsWith('.html') && !path.endsWith('.xhtml')) return;
+      if (path.endsWith('content.opf')) {
+        this.writeOPF(path);
+      }
 
-      const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
+      if (path.endsWith(this.getCoverPath())) {
+        this.writeCover(path);
+      }
 
-      this.files[path] = { path, tokens: {}, elements: 0 };
+      if (path.endsWith('.html') || path.endsWith('.xhtml')) {
+        const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
 
-      this.parseFile(this.files[path], jsdom.window.document.body);
+        this.files[path] = { path, tokens: {}, elements: 0 };
+
+        this.parseFile(this.files[path], jsdom.window.document.body);
+      }
     });
 
     this.parseQueries();
@@ -186,42 +243,8 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                            Parse                                            **
+   **                                          Translate                                          **
    ********************************************************************************************** */
-
-  getQuery() {
-    return _.find(this.queries, (query) => {
-      if (query.finish || query.waiting) return false;
-
-      return true;
-    });
-  }
-
-  getQueryParams(query) {
-    return {
-      model: 'gpt-3.5-turbo-0613',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            `Context:`,
-            `- You are translating the content of a book from '${this.translations.source}' to '${this.translations.destination}'`,
-            `Rules:`,
-            `- The content is in JSON format`,
-            `- Translate UNIQUELY the values of the JSON`,
-            `- NOT translate anything in JSON keys (filepath and uuid)`,
-            `- Preserve spaces in the string values`,
-            `- The response should be formatted as the same JSON structure`,
-            `Book:`,
-            `- Title: ${JSON.stringify(this.epub.metadata.title)}`,
-            `- Author: ${JSON.stringify(this.epub.metadata.creator)}`,
-            `Content:`,
-            JSON.stringify(query.data),
-          ].join('\n'),
-        },
-      ],
-    };
-  }
 
   addTranslation(data, query) {
     try {
@@ -248,50 +271,6 @@ export default class EpubInterface extends EventEmitter {
 
       throw error;
     }
-  }
-
-  onQueriesInterval() {
-    const query = this.getQuery();
-
-    if (!query) return;
-
-    query.waiting = true;
-
-    Logger.info(`${this.getInfos()} - START_QUERY ${query.id}`);
-
-    OpenAI.createChatCompletion(this.getQueryParams(query))
-      .then((response) => {
-        query.waiting = false;
-
-        this.addTranslation(response.data, query);
-      })
-      .catch((err) => {
-        query.waiting = false;
-
-        Logger.error(`${this.getInfos()} - ERROR_QUERY ${query.id}`, err.response?.data || err);
-      });
-  }
-
-  hasFinishQueries() {
-    return this.queries.every((query) => query.finish);
-  }
-
-  stopQueriesInterval() {
-    clearInterval(this.timers.queries.id);
-
-    this.timers.queries.id = null;
-  }
-
-  startQueriesInterval() {
-    this.stopQueriesInterval();
-
-    this.timers.queries.id = setInterval(() => {
-      this.onQueriesInterval();
-
-      if (!this.hasFinishQueries()) return;
-
-      this.translateFiles();
-    }, this.timers.queries.interval);
   }
 
   translateFile(content, translations) {
@@ -329,8 +308,157 @@ export default class EpubInterface extends EventEmitter {
     this.emit('translated');
   }
 
+  onQueriesInterval() {
+    const query = this.getQuery();
+
+    if (!query) return;
+
+    query.waiting = true;
+
+    Logger.info(`${this.getInfos()} - START_QUERY ${query.id}`);
+
+    OpenAI.createChatCompletion(this.getQueryParams(query))
+      .then((response) => {
+        query.waiting = false;
+
+        this.addTranslation(response.data, query);
+      })
+      .catch((err) => {
+        query.waiting = false;
+
+        Logger.error(`${this.getInfos()} - ERROR_QUERY ${query.id}`, err.response?.data || err);
+      });
+  }
+
+  stopQueriesInterval() {
+    clearInterval(this.timers.queries.id);
+
+    this.timers.queries.id = null;
+  }
+
+  startQueriesInterval() {
+    this.stopQueriesInterval();
+
+    this.timers.queries.id = setInterval(() => {
+      this.onQueriesInterval();
+
+      if (!this.hasFinishQueries()) return;
+
+      this.translateFiles();
+    }, this.timers.queries.interval);
+  }
+
   translate() {
     this.startQueriesInterval();
+  }
+
+  /** **********************************************************************************************
+   **                                        Write: Cover                                         **
+   ********************************************************************************************** */
+
+  async writeCover(path) {
+    const image = await loadImage(path);
+
+    const canvas = createCanvas(800, 1280);
+    const context = canvas.getContext('2d');
+
+    context.drawImage(image, 0, 0, 800, 1280);
+
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(0, 80);
+    context.lineTo(250, 80);
+    context.lineTo(300, 0);
+    context.closePath();
+
+    context.lineWidth = 8;
+    context.strokeStyle = '#a20000';
+    context.stroke();
+
+    context.fillStyle = '#fff9b8';
+    context.fill();
+
+    context.fillStyle = '#16180f';
+    context.textAlign = 'center';
+    context.font = '30px "Times New Roman"';
+    context.fillText('The Babel Library', 132, 50);
+
+    const buffer = canvas.toBuffer(mime.lookup(path));
+
+    fs.writeFileSync(path, buffer);
+  }
+
+  /** **********************************************************************************************
+   **                                         Write: OPF                                          **
+   ********************************************************************************************** */
+
+  getMetadataTitle() {
+    const title = this.metadata.title || this.epub.metadata.title;
+
+    return title ? `<dc:title>${title}</dc:title>` : ``;
+  }
+
+  getMetadataCreator() {
+    const creator = this.metadata.creator || this.epub.metadata.creator;
+
+    return creator ? `<dc:creator>${creator}</dc:creator>` : ``;
+  }
+
+  getMetadataDate() {
+    const { date } = this.epub.metadata;
+
+    return date ? `<dc:date>${date}</dc:date>` : ``;
+  }
+
+  getMetadataPublisher() {
+    const { publisher } = this.epub.metadata || 'The Babel Library';
+
+    return publisher ? `<dc:publisher>${publisher}</dc:publisher>` : ``;
+  }
+
+  getMetadataLanguage() {
+    const iso = this.getIsoCode(this.translations.destination);
+
+    return iso ? `<dc:language>${iso}</dc:language>` : ``;
+  }
+
+  getMetadataSerie() {
+    const { series_name } = this.metadata;
+
+    return series_name ? `<meta name="calibre:series" content="${series_name}"/>` : ``;
+  }
+
+  getMetadataSeriesIndex() {
+    const { series_volume } = this.metadata;
+
+    return series_volume ? `<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
+  }
+
+  getMetadataCover() {
+    const { cover } = this.metadata;
+
+    return cover ? `<meta name="cover" content="${cover}"/>` : ``;
+  }
+
+  getMetadata() {
+    return `<metadata xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    ${this.getMetadataTitle()}
+    ${this.getMetadataCreator()}
+    ${this.getMetadataDate()}
+    ${this.getMetadataPublisher()}
+    ${this.getMetadataLanguage()}
+    ${this.getMetadataSerie()}
+    ${this.getMetadataSeriesIndex()}
+    ${this.getMetadataCover()}
+  </metadata>`.replace(/^\s*\n/gm, '');
+  }
+
+  writeOPF(path) {
+    const content = this.readFile(path);
+
+    const regex = /<metadata\b[^>]*>([\s\S]*?)<\/metadata>/;
+
+    this.writeFile(path, content.replace(regex, this.getMetadata()));
   }
 
   /** **********************************************************************************************
@@ -370,7 +498,30 @@ export default class EpubInterface extends EventEmitter {
    **                                            Init                                             **
    ********************************************************************************************** */
 
-  extractEpub() {
+  initMetadata() {
+    return new Promise((resolve) => {
+      prompt.get(
+        [
+          { name: 'title', description: 'Book title', default: this.epub.metadata.title },
+          { name: 'creator', description: 'Book creator', default: this.epub.metadata.creator },
+          { name: 'series_name', description: 'Book series name' },
+          { name: 'series_volume', description: 'Book series volume' },
+        ],
+        (_err, result) => {
+          this.metadata.title = result.title;
+          this.metadata.creator = result.creator;
+          this.metadata.series_name = result.series_name;
+          this.metadata.series_volume = result.series_volume;
+
+          Logger.info(`${this.getInfos()} - INIT_METADATA`, this.metadata);
+
+          resolve();
+        }
+      );
+    });
+  }
+
+  initEpub() {
     const rootPath = this.getRootPath();
 
     if (fs.existsSync(rootPath)) {
@@ -384,7 +535,9 @@ export default class EpubInterface extends EventEmitter {
     this.epub = new EPUB(this.path);
 
     this.epub.on('end', async () => {
-      this.extractEpub();
+      this.initEpub();
+
+      await this.initMetadata();
 
       this.translations.files = Database.getTranslations(this.translations.destination);
 

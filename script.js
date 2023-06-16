@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 /* eslint-disable import/no-unresolved */
 
 import Logger from './config/modules/logger.js';
@@ -37,6 +38,8 @@ const parse = () => {
 
 const init = () => {
   epub.on('initiated', () => {
+    setInterval(() => Logger.info(epub.getStatus()), 5000);
+
     parse();
   });
 
@@ -48,5 +51,3 @@ const init = () => {
 
   init();
 })();
-
-setInterval(() => Logger.info(epub.getStatus()), 5000);
