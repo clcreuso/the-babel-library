@@ -191,7 +191,7 @@ export default class EpubInterface extends EventEmitter {
           this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
 
           this.queries[id].data[path] ||= {};
-          this.queries[id].data[path][uuid] = text;
+          this.queries[id].data[path][uuid] = text.replace(/(“|”)/g, '"');
 
           if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
         }
@@ -229,7 +229,7 @@ export default class EpubInterface extends EventEmitter {
       }
 
       if (path.endsWith('.html') || path.endsWith('.xhtml')) {
-        const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
+        const jsdom = new JSDOM(this.readFile(path));
 
         this.files[path] = { path, tokens: {}, elements: 0 };
 
