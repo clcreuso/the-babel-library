@@ -316,7 +316,10 @@ export default class EpubInterface extends EventEmitter {
 
       this.translateFile(jsdom.window.document.body, translations);
 
-      this.writeFile(path, prettier.format(jsdom.serialize(), { parser: 'html' }));
+      this.writeFile(
+        path,
+        prettier.format(jsdom.serialize(), { parser: 'html' }).replace(/&nbsp;/g, ' ')
+      );
 
       Logger.info(`${this.getInfos()} - WRITE_FILE "${path}"`);
     });
