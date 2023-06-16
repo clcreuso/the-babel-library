@@ -14,6 +14,7 @@ const epub = new EPUB({
 
 const write = () => {
   epub.on('writed', () => {
+    Logger.info('EPUB - WRITED');
     setTimeout(() => process.exit(0), 5000);
   });
 
@@ -22,6 +23,8 @@ const write = () => {
 
 const translate = () => {
   epub.on('translated', () => {
+    Logger.info('EPUB - TRANSLATED');
+
     write();
   });
 
@@ -30,6 +33,8 @@ const translate = () => {
 
 const parse = () => {
   epub.on('parsed', () => {
+    Logger.info('EPUB - PARSED');
+
     translate();
   });
 
@@ -38,6 +43,8 @@ const parse = () => {
 
 const init = () => {
   epub.on('initiated', () => {
+    Logger.info('EPUB - INITIATED');
+
     setInterval(() => Logger.info(epub.getStatus()), 5000);
 
     parse();

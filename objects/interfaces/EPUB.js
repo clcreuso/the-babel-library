@@ -44,7 +44,7 @@ export default class EpubInterface extends EventEmitter {
     };
 
     this.timers = {
-      queries: { id: null, interval: 2000 },
+      queries: { id: null, interval: 1000 },
     };
   }
 
@@ -148,6 +148,10 @@ export default class EpubInterface extends EventEmitter {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
   }
 
+  readHTML(path) {
+    return this.readFile(path).replace(/<a\b[^>]*\/>/g, '');
+  }
+
   readFile(path) {
     const buffer = fs.readFileSync(path);
 
@@ -229,7 +233,7 @@ export default class EpubInterface extends EventEmitter {
       }
 
       if (path.endsWith('.html') || path.endsWith('.xhtml')) {
-        const jsdom = new JSDOM(this.readFile(path));
+        const jsdom = new JSDOM(this.readHTML(path));
 
         this.files[path] = { path, tokens: {}, elements: 0 };
 
@@ -288,12 +292,14 @@ export default class EpubInterface extends EventEmitter {
   }
 
   translateFiles() {
+    const rootPath = this.getRootPath();
+
     Object.entries(this.translations.files).forEach(([path, translations]) => {
-      if (!path.startsWith(this.getRootPath())) return;
+      if (!path.startsWith(rootPath)) return;
 
       translations.count = 0;
 
-      const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
+      const jsdom = new JSDOM(this.readHTML(path));
 
       this.translateFile(jsdom.window.document.body, translations);
 
