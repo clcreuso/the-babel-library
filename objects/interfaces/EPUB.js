@@ -289,6 +289,8 @@ export default class EpubInterface extends EventEmitter {
 
   translateFiles() {
     Object.entries(this.translations.files).forEach(([path, translations]) => {
+      if (!path.startsWith(this.getRootPath())) return;
+
       translations.count = 0;
 
       const jsdom = new JSDOM(this.readFile(path), { xmlMode: true, parsingMode: 'auto' });
@@ -466,7 +468,7 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   write() {
-    const destPath = this.getFilePath(`${this.getFilename('destination')}.epub`);
+    const destPath = `./library/destinations/${this.getFilename('destination')}.epub`;
     const files = this.getFiles(this.getRootPath());
     const output = fs.createWriteStream(destPath);
     const archive = zip('zip', { store: false });
