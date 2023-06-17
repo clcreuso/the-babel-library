@@ -121,18 +121,19 @@ export default class EpubInterface extends EventEmitter {
         {
           role: 'user',
           content: [
-            `Context:`,
-            `- You are translating the content of a book from '${this.translations.source}' to '${this.translations.destination}'`,
-            `Rules:`,
-            `- The content is in JSON format`,
-            `- Translate UNIQUELY the values of the JSON`,
-            `- NOT translate anything in JSON keys (filepath and uuid)`,
-            `- Preserve spaces in the string values`,
-            `- The response should be formatted as the same JSON structure`,
-            `Book:`,
-            `- Title: ${JSON.stringify(this.epub.metadata.title)}`,
-            `- Author: ${JSON.stringify(this.epub.metadata.creator)}`,
-            `Content:`,
+            `Contexte :`,
+            `- Traduire le contenu d'un livre vers le ${this.translations.destination}`,
+            `Règles :`,
+            `- Peut importe la langue source le text final doit etre en ${this.translations.destination}`,
+            `- Le contenu est au format JSON`,
+            `- Traduire UNIQUEMENT les valeurs du JSON`,
+            `- NE traduisez rien dans les clés JSON (chemin de fichier et UUID)`,
+            `- Préservez les espaces dans les valeurs de chaîne de caractères`,
+            `- La réponse doit être formatée de la même structure JSON`,
+            `Livre :`,
+            `- Titre : ${JSON.stringify(this.epub.metadata.title)}`,
+            `- Auteur : ${JSON.stringify(this.epub.metadata.creator)}`,
+            `Contenu :`,
             JSON.stringify(query.data),
           ].join('\n'),
         },
@@ -158,10 +159,6 @@ export default class EpubInterface extends EventEmitter {
     return buffer.toString('utf8');
   }
 
-  HasTextTranslate(text) {
-    return /[a-zA-Z]/.test(text);
-  }
-
   hasFinishQueries() {
     return this.queries.every((query) => query.finish);
   }
@@ -170,6 +167,12 @@ export default class EpubInterface extends EventEmitter {
     const limit = isWithinTokenLimit(data, 500);
 
     return !limit;
+  }
+
+  hasTextTranslate(text) {
+    const regex = /^[^\p{L}\p{N}]*$/u;
+
+    return !regex.test(text);
   }
 
   isAlreadyTranslated(path, uuid) {
@@ -195,7 +198,7 @@ export default class EpubInterface extends EventEmitter {
           this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
 
           this.queries[id].data[path] ||= {};
-          this.queries[id].data[path][uuid] = text.replace(/(“|”)/g, '"');
+          this.queries[id].data[path][uuid] = text.replace(/(“|”|《|》)/g, '"');
 
           if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
         }
@@ -214,7 +217,7 @@ export default class EpubInterface extends EventEmitter {
       element.removeChild(element.firstChild);
     }
 
-    if (!this.HasTextTranslate(element.textContent)) return;
+    if (!this.hasTextTranslate(element.textContent)) return;
 
     file.tokens ||= {};
     file.tokens[uuid] = element.textContent;
@@ -271,7 +274,7 @@ export default class EpubInterface extends EventEmitter {
 
       Logger.info(`${this.getInfos()} - SUCCESS_QUERY ${query.id}`);
     } catch (error) {
-      Logger.error(`${this.getInfos()} - INVALID_JSON`);
+      Logger.error(`${this.getInfos()} - INVALID_JSON`, data.choices[0].message.content);
 
       throw error;
     }
