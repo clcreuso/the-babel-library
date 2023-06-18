@@ -25,6 +25,8 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
+const MAX_TOKENS = 500;
+
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
@@ -158,7 +160,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   hasFullyQuery(data) {
-    const limit = isWithinTokenLimit(data, 500);
+    const limit = isWithinTokenLimit(data, MAX_TOKENS);
 
     return !limit;
   }
