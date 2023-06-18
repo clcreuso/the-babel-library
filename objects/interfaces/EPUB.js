@@ -35,7 +35,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.path = params.path;
 
-    this.metadata = {};
+    this.metadata = params.metadata || {};
 
     this.translations = {
       source: params.source || 'English',
