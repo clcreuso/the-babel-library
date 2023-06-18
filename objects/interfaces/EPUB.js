@@ -9,9 +9,7 @@ import prompt from 'prompt';
 import crypto from 'crypto';
 import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
-import prettier from 'prettier';
 
-import { JSDOM } from 'jsdom';
 import { EventEmitter } from 'events';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { createCanvas, loadImage } from 'canvas';
@@ -149,10 +147,6 @@ export default class EpubInterface extends EventEmitter {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
   }
 
-  readHTML(path) {
-    return this.readFile(path).replace(/<a\b[^>]*\/>/g, '');
-  }
-
   readFile(path) {
     const buffer = fs.readFileSync(path);
 
@@ -170,7 +164,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   hasTextTranslate(text) {
-    const regex = /^[^\p{L}\p{N}]*$/u;
+    const regex = /^[^\p{L}]*$/u;
 
     return !regex.test(text);
   }
@@ -206,21 +200,29 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  parseFile(file, element) {
-    file.elements += 1;
+  parseFile(file, html) {
+    let skip = false;
 
-    const uuid = `uuid-${file.elements}`;
+    for (let index = 0; index < html.length; index += 1) {
+      if (html.slice(index, index + 6) === '<style') skip = true;
 
-    while (element.firstChild) {
-      this.parseFile(file, element.firstChild);
+      if (html[index] === '>' && !skip) {
+        file.elements += 1;
 
-      element.removeChild(element.firstChild);
+        while (html[index + 1] && html[index + 1] !== '<') {
+          index += 1;
+
+          file.tokens[`uuid-${file.elements}`] ||= '';
+          file.tokens[`uuid-${file.elements}`] += html[index];
+        }
+
+        if (!this.hasTextTranslate(file.tokens[`uuid-${file.elements}`])) {
+          delete file.tokens[`uuid-${file.elements}`];
+        }
+      } else if (html[index] === '>' && skip) {
+        skip = false;
+      }
     }
-
-    if (!this.hasTextTranslate(element.textContent)) return;
-
-    file.tokens ||= {};
-    file.tokens[uuid] = element.textContent;
   }
 
   parse() {
@@ -236,11 +238,9 @@ export default class EpubInterface extends EventEmitter {
       }
 
       if (path.endsWith('.html') || path.endsWith('.xhtml')) {
-        const jsdom = new JSDOM(this.readHTML(path));
-
         this.files[path] = { path, tokens: {}, elements: 0 };
 
-        this.parseFile(this.files[path], jsdom.window.document.body);
+        this.parseFile(this.files[path], this.readFile(path));
       }
     });
 
@@ -259,7 +259,7 @@ export default class EpubInterface extends EventEmitter {
 
       Object.keys(translations).forEach((file) => {
         Object.entries(translations[file]).forEach(([uuid, value]) => {
-          this.translations.files[file] ||= { count: 0 };
+          this.translations.files[file] ||= {};
           this.translations.files[file][uuid] = value;
 
           delete query.data[file][uuid];
@@ -280,18 +280,18 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  translateFile(content, translations) {
-    translations.count += 1;
+  translateFile(path, translations) {
+    const origins = this.files[path].tokens;
 
-    const uuid = `uuid-${translations.count}`;
+    let file = this.readFile(path);
 
-    for (let i = 0; i < content.childNodes.length; i += 1) {
-      this.translateFile(content.childNodes[i], translations);
-    }
+    Object.keys(translations).forEach((uuid) => {
+      if (!origins[uuid] && !translations[uuid]) return;
 
-    if (!translations[uuid]) return;
+      file = file.replace(`>${origins[uuid]}<`, `>${translations[uuid]}<`);
+    });
 
-    content.textContent = translations[uuid];
+    return file;
   }
 
   translateFiles() {
@@ -300,16 +300,9 @@ export default class EpubInterface extends EventEmitter {
     Object.entries(this.translations.files).forEach(([path, translations]) => {
       if (!path.startsWith(rootPath)) return;
 
-      translations.count = 0;
+      const file = this.translateFile(path, translations);
 
-      const jsdom = new JSDOM(this.readHTML(path));
-
-      this.translateFile(jsdom.window.document.body, translations);
-
-      this.writeFile(
-        path,
-        prettier.format(jsdom.serialize(), { parser: 'html' }).replace(/&nbsp;/g, ' ')
-      );
+      this.writeFile(path, file);
 
       Logger.info(`${this.getInfos()} - WRITE_FILE "${path}"`);
     });
