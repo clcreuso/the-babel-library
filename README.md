@@ -61,9 +61,12 @@ The script will translate the EPUB file and create a translated version in the d
 
 ## Notes
 
-    JSON parsing errors (API response) are not serious.
-    If an error persists, you will either need to lower the value of MAX_TOKENS or manually add the translation to ./db/Database.json.
-    For languages like Chinese, it is possible that certain fields are not translated. In that case, you will need to remove them from ./db/Database.json and rerun the script, or translate them manually and modify them in ./db/Database.json.
+    - JSON parsing errors (API response) are not serious.
+    - If an error persists, you will either need to lower the value of MAX_TOKENS or 
+    manually add the translation to ./db/Database.json.
+    - For languages like Chinese, it is possible that certain fields are not translated.
+    In that case, you will need to remove them from ./db/Database.json and rerun the 
+    script, or translate them manually and modify them in ./db/Database.json.
 
 ## License
 
