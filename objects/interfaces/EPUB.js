@@ -65,6 +65,10 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getCoverPath() {
+    if (!this.epub.manifest[this.epub.metadata.cover]) {
+      return _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href;
+    }
+
     return this.epub.manifest[this.epub.metadata.cover]?.href;
   }
 
@@ -451,7 +455,11 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getMetadataCover() {
-    const { cover } = this.metadata;
+    let { cover } = this.epub.metadata;
+
+    if (!_.find(this.epub.manifest, { id: cover })) {
+      cover = _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.id;
+    }
 
     return cover ? `<meta name="cover" content="${cover}"/>` : ``;
   }
