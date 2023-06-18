@@ -25,7 +25,7 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 500;
+const MAX_TOKENS = 750;
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -194,7 +194,7 @@ export default class EpubInterface extends EventEmitter {
           this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
 
           this.queries[id].data[path] ||= {};
-          this.queries[id].data[path][uuid] = text.replace(/(“|”|《|》)/g, '"');
+          this.queries[id].data[path][uuid] = text.replace(/(“|”|《|》|«|»)/g, '"');
 
           if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
         }
@@ -255,9 +255,15 @@ export default class EpubInterface extends EventEmitter {
    **                                          Translate                                          **
    ********************************************************************************************** */
 
-  addTranslation(data, query) {
+  fixStringJSON(jsonString) {
+    return jsonString.replace(/ "/g, ' \\"').replace(/" /g, '\\" ');
+  }
+
+  addTranslation(data, query, retry = false) {
     try {
-      const translations = JSON.parse(data.choices[0].message.content);
+      const translations = retry
+        ? JSON.parse(this.fixStringJSON(data.choices[0].message.content))
+        : JSON.parse(data.choices[0].message.content);
 
       Object.keys(translations).forEach((file) => {
         Object.entries(translations[file]).forEach(([uuid, value]) => {
@@ -276,9 +282,13 @@ export default class EpubInterface extends EventEmitter {
 
       Logger.info(`${this.getInfos()} - SUCCESS_QUERY ${query.id}`);
     } catch (error) {
-      Logger.error(`${this.getInfos()} - INVALID_JSON`, data.choices[0].message.content);
+      if (!retry) {
+        this.addTranslation(data, query, true);
+      } else {
+        Logger.error(`${this.getInfos()} - INVALID_JSON`, data.choices[0].message.content);
 
-      throw error;
+        throw error;
+      }
     }
   }
 
