@@ -472,8 +472,10 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   write() {
+    const rootPath = this.getRootPath();
+
     const destPath = `./library/destinations/${this.getFilename('destination')}.epub`;
-    const files = this.getFiles(this.getRootPath());
+    const files = this.getFiles(rootPath);
     const output = fs.createWriteStream(destPath);
     const archive = zip('zip', { store: false });
 
@@ -493,7 +495,7 @@ export default class EpubInterface extends EventEmitter {
       const content = fs.readFileSync(file);
 
       archive.append(content, {
-        name: file.replace(`${this.getRootPath()}/`, ''),
+        name: file.replace(`${rootPath}/`, ''),
       });
     });
 
