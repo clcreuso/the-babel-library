@@ -302,9 +302,12 @@ export default class EpubInterface extends EventEmitter {
     let file = this.readFile(path);
 
     Object.keys(translations).forEach((uuid) => {
-      if (!origins[uuid] && !translations[uuid]) return;
+      if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return;
 
-      file = file.replace(`>${origins[uuid]}<`, `>${translations[uuid]}<`);
+      file = file.replace(
+        `>${origins[uuid]}<`,
+        `>${translations[uuid]?.replace(' & ', ' &amp; ')}<`
+      );
     });
 
     return file;
@@ -386,9 +389,9 @@ export default class EpubInterface extends EventEmitter {
 
     context.beginPath();
     context.moveTo(0, 0);
-    context.lineTo(0, 80);
-    context.lineTo(250, 80);
-    context.lineTo(300, 0);
+    context.lineTo(0, 90);
+    context.lineTo(275, 90);
+    context.lineTo(350, 0);
     context.closePath();
 
     context.lineWidth = 8;
@@ -400,8 +403,10 @@ export default class EpubInterface extends EventEmitter {
 
     context.fillStyle = '#16180f';
     context.textAlign = 'center';
-    context.font = '30px "Times New Roman"';
-    context.fillText('The Babel Library', 132, 50);
+    context.font = '34px "Times New Roman"';
+    context.fillText('The Babel Library', 160, 45);
+    context.font = '20px "Times New Roman"';
+    context.fillText(`Translated from "${this.translations.source}"`, 142, 70);
 
     const buffer = canvas.toBuffer(mime.lookup(path));
 
@@ -491,8 +496,8 @@ export default class EpubInterface extends EventEmitter {
 
   write() {
     const rootPath = this.getRootPath();
-
     const destPath = `./library/destinations/${this.getFilename('destination')}.epub`;
+
     const files = this.getFiles(rootPath);
     const output = fs.createWriteStream(destPath);
     const archive = zip('zip', { store: false });
