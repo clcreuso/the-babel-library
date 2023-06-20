@@ -235,7 +235,7 @@ export default class EpubInterface extends EventEmitter {
     const paths = this.getFiles(this.getRootPath());
 
     paths.forEach((path) => {
-      if (path.endsWith('content.opf')) {
+      if (path.endsWith('.opf')) {
         this.writeOPF(path);
       }
 
@@ -543,6 +543,7 @@ export default class EpubInterface extends EventEmitter {
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
           this.metadata.series_volume = result.series_volume;
+          this.epub.metadata.cover ||= 'cover';
 
           Logger.info(`${this.getInfos()} - INIT_METADATA`, this.metadata);
 
