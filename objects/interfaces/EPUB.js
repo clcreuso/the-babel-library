@@ -470,7 +470,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getMetadata() {
-    return `<metadata xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    return `
     ${this.getMetadataTitle()}
     ${this.getMetadataCreator()}
     ${this.getMetadataDate()}
@@ -478,16 +478,15 @@ export default class EpubInterface extends EventEmitter {
     ${this.getMetadataLanguage()}
     ${this.getMetadataSerie()}
     ${this.getMetadataSeriesIndex()}
-    ${this.getMetadataCover()}
-  </metadata>`.replace(/^\s*\n/gm, '');
+    ${this.getMetadataCover()}`.replace(/^\s*\n/gm, '');
   }
 
   writeOPF(path) {
     const content = this.readFile(path);
 
-    const regex = /<metadata\b[^>]*>([\s\S]*?)<\/metadata>/;
+    const regex = /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/;
 
-    this.writeFile(path, content.replace(regex, this.getMetadata()));
+    this.writeFile(path, content.replace(regex, `$1${this.getMetadata()}$3`));
   }
 
   /** **********************************************************************************************
