@@ -175,13 +175,21 @@ export default class EpubInterface extends EventEmitter {
     return !regex.test(text);
   }
 
-  isAlreadyTranslated(path, uuid) {
-    return this.translations.files[path]?.[uuid] !== undefined;
+  isAlreadyTranslated(translation) {
+    return translation !== undefined;
+  }
+
+  isValidTranslation(translation = '') {
+    return !translation.includes('\\"uuid-');
   }
 
   /** **********************************************************************************************
    **                                            Parse                                            **
    ********************************************************************************************** */
+
+  parseQuote(text) {
+    return text.replace(/(“|”|《|》|«|»|<<|>>)/g, '"');
+  }
 
   parseQueries() {
     this.queries ||= [];
@@ -190,7 +198,10 @@ export default class EpubInterface extends EventEmitter {
 
     Object.keys(this.files).forEach((path) => {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
-        if (this.isAlreadyTranslated(path, uuid)) {
+        if (
+          this.isAlreadyTranslated(this.translations.files[path]?.[uuid]) &&
+          this.isValidTranslation(this.translations.files[path]?.[uuid])
+        ) {
           Logger.info(`${this.getInfos()} - ALREADY_TRANSLATED`, { path, uuid });
         } else {
           if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
@@ -198,7 +209,7 @@ export default class EpubInterface extends EventEmitter {
           this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
 
           this.queries[id].data[path] ||= {};
-          this.queries[id].data[path][uuid] = text.replace(/(“|”|《|》|«|»)/g, '"');
+          this.queries[id].data[path][uuid] = this.parseQuote(text);
 
           if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
         }
@@ -271,8 +282,10 @@ export default class EpubInterface extends EventEmitter {
 
       Object.keys(translations).forEach((file) => {
         Object.entries(translations[file]).forEach(([uuid, value]) => {
+          if (!this.isValidTranslation(value)) return;
+
           this.translations.files[file] ||= {};
-          this.translations.files[file][uuid] = value;
+          this.translations.files[file][uuid] = this.parseQuote(value);
 
           delete query.data[file][uuid];
         });
@@ -296,6 +309,10 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
+  translateReplace(translations, uuid) {
+    return this.parseQuote(translations[uuid]?.replace(/&(?!amp;)/g, '&amp;'));
+  }
+
   translateFile(path, translations) {
     const origins = this.files[path].tokens;
 
@@ -304,10 +321,7 @@ export default class EpubInterface extends EventEmitter {
     Object.keys(translations).forEach((uuid) => {
       if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return;
 
-      file = file.replace(
-        `>${origins[uuid]}<`,
-        `>${translations[uuid]?.replace(' & ', ' &amp; ')}<`
-      );
+      file = file.replace(`>${origins[uuid]}<`, `>${this.translateReplace(translations, uuid)}<`);
     });
 
     return file;
