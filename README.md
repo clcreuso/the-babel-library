@@ -43,18 +43,18 @@ To translate an EPUB file, update the `script.js` file with the desired paramete
 
 ```javascript
 const translationParams = {
-  path: '/path/to/your/epub/file.epub', // Path to the EPUB file you want to translate
+  ...
   source: 'English', // Source language of the EPUB file
   destination: 'French', // Destination language for translation
 };
 ```
 
-Replace `/path/to/your/epub/file.epub` with the actual path to your EPUB file. Specify the source language and destination language for translation as desired.
+Specify the source language and destination language for translation as desired.
 
 Run the script by executing the following command:
 
 ```
-node script.js
+node script.js path/to/your/file.epub
 ```
 
 The script will translate the EPUB file and create a translated version in the destination language.
