@@ -7,9 +7,9 @@ import Database from './objects/Database.js';
 import EPUB from './objects/interfaces/EPUB.js';
 
 const epub = new EPUB({
-  path: '/path/to/your/epub/file.epub',
+  path: process.argv[2],
   source: 'English',
-  destination: 'French',
+  destination: 'Français',
 });
 
 const write = () => {
