@@ -31,13 +31,19 @@ class Database {
     return { ...this.translations[langage] };
   }
 
+  addTranslation(langage, file, uuid, value) {
+    this.translations[langage][file] ||= {};
+    this.translations[langage][file][uuid] = value;
+
+    this.startWriteTimeout();
+  }
+
   addTranslations(langage, translations) {
     this.translations[langage] ||= {};
 
     Object.keys(translations).forEach((file) => {
       Object.entries(translations[file]).forEach(([uuid, value]) => {
-        this.translations[langage][file] ||= {};
-        this.translations[langage][file][uuid] = value;
+        this.addTranslation(langage, file, uuid, value);
       });
     });
 

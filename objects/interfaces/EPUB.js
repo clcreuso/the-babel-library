@@ -188,7 +188,9 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   parseQuote(text) {
-    return text.replace(/(“|”|《|》|«|»|<<|>>)/g, '"');
+    return text
+      .replace(/(“ | ”|《 | 》|« | »|<< | >>)/g, '"')
+      .replace(/(“|”|《|》|«|»|<<|>>)/g, '"');
   }
 
   parseQueries() {
@@ -202,6 +204,17 @@ export default class EpubInterface extends EventEmitter {
           this.isAlreadyTranslated(this.translations.files[path]?.[uuid]) &&
           this.isValidTranslation(this.translations.files[path]?.[uuid])
         ) {
+          this.translations.files[path][uuid] = this.parseQuote(
+            this.translations.files[path][uuid]
+          );
+
+          Database.addTranslation(
+            this.translations.destination,
+            path,
+            uuid,
+            this.translations.files[path][uuid]
+          );
+
           Logger.info(`${this.getInfos()} - ALREADY_TRANSLATED`, { path, uuid });
         } else {
           if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
