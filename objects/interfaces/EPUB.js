@@ -230,11 +230,25 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
+  skipTag(html, index, tag = '</code>') {
+    while (index < html.length) {
+      if (html.slice(index, index + tag.length) === tag) break;
+
+      index += 1;
+    }
+
+    return index + tag.length - 1;
+  }
+
   parseFile(file, html) {
     let skip = false;
 
     for (let index = 0; index < html.length; index += 1) {
       if (html.slice(index, index + 6) === '<style') skip = true;
+
+      if (html.slice(index, index + 4) === '<pre') index = this.skipTag(html, index, '</pre>');
+
+      if (html.slice(index, index + 5) === '<code') index = this.skipTag(html, index, '</code>');
 
       if (html[index] === '>' && !skip) {
         file.elements += 1;
