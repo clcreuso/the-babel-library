@@ -153,6 +153,21 @@ export default class EpubInterface extends EventEmitter {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
   }
 
+  removeBadHtmlTag(html) {
+    html = html.replace(/<b\s*[^>]*>([A-Za-z])<\/b>/g, (match, letter) => letter);
+    html = html.replace(/<i\s*[^>]*>([A-Za-z])<\/i>/g, (match, letter) => letter);
+
+    return html;
+  }
+
+  readHTML(path) {
+    let html = this.readFile(path);
+
+    _.times(3, () => (html = this.removeBadHtmlTag()));
+
+    return html;
+  }
+
   readFile(path) {
     const buffer = fs.readFileSync(path);
 
@@ -179,7 +194,19 @@ export default class EpubInterface extends EventEmitter {
     return translation !== undefined;
   }
 
-  isValidTranslation(translation = '') {
+  isValidTranslation(translation = '', origin = '') {
+    if (translation.length < origin.length / 10) {
+      Logger.info(`${this.getInfos()} - BAD_TRANSLATION`);
+
+      return false;
+    }
+
+    if (origin.length < translation.length / 10) {
+      Logger.info(`${this.getInfos()} - BAD_TRANSLATION`);
+
+      return false;
+    }
+
     return !translation.includes('\\"uuid-');
   }
 
@@ -202,7 +229,7 @@ export default class EpubInterface extends EventEmitter {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
         if (
           this.isAlreadyTranslated(this.translations.files[path]?.[uuid]) &&
-          this.isValidTranslation(this.translations.files[path]?.[uuid])
+          this.isValidTranslation(this.translations.files[path]?.[uuid], text)
         ) {
           this.translations.files[path][uuid] = this.parseQuote(
             this.translations.files[path][uuid]
@@ -284,7 +311,7 @@ export default class EpubInterface extends EventEmitter {
       if (path.endsWith('.html') || path.endsWith('.xhtml')) {
         this.files[path] = { path, tokens: {}, elements: 0 };
 
-        this.parseFile(this.files[path], this.readFile(path));
+        this.parseFile(this.files[path], this.readHTML(path));
       }
     });
 
@@ -309,7 +336,7 @@ export default class EpubInterface extends EventEmitter {
 
       Object.keys(translations).forEach((file) => {
         Object.entries(translations[file]).forEach(([uuid, value]) => {
-          if (!this.isValidTranslation(value)) return;
+          if (!this.isValidTranslation(value, query.data[file][uuid])) return;
 
           this.translations.files[file] ||= {};
           this.translations.files[file][uuid] = this.parseQuote(value);
@@ -343,12 +370,18 @@ export default class EpubInterface extends EventEmitter {
   translateFile(path, translations) {
     const origins = this.files[path].tokens;
 
-    let file = this.readFile(path);
+    let file = this.readHTML(path);
 
     Object.keys(translations).forEach((uuid) => {
       if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return;
 
-      file = file.replace(`>${origins[uuid]}<`, `>${this.translateReplace(translations, uuid)}<`);
+      const translation = this.translateReplace(translations, uuid);
+
+      if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
+        file = file.replace(`>${origins[uuid]}<`, `> ${translation}<`);
+      } else {
+        file = file.replace(`>${origins[uuid]}<`, `>${translation}<`);
+      }
     });
 
     return file;
@@ -358,7 +391,7 @@ export default class EpubInterface extends EventEmitter {
     const rootPath = this.getRootPath();
 
     Object.entries(this.translations.files).forEach(([path, translations]) => {
-      if (!path.startsWith(rootPath)) return;
+      if (!path.startsWith(rootPath) || !this.files[path]) return;
 
       const file = this.translateFile(path, translations);
 
