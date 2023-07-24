@@ -163,7 +163,7 @@ export default class EpubInterface extends EventEmitter {
   readHTML(path) {
     let html = this.readFile(path);
 
-    _.times(3, () => (html = this.removeBadHtmlTag()));
+    _.times(3, () => (html = this.removeBadHtmlTag(html)));
 
     return html;
   }
@@ -363,7 +363,7 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  translateReplace(translations, uuid) {
+  getFileTranslation(translations, uuid) {
     return this.parseQuote(translations[uuid]?.replace(/&(?!amp;)/g, '&amp;'));
   }
 
@@ -375,13 +375,17 @@ export default class EpubInterface extends EventEmitter {
     Object.keys(translations).forEach((uuid) => {
       if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return;
 
-      const translation = this.translateReplace(translations, uuid);
+      let translation = this.getFileTranslation(translations, uuid);
 
       if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
-        file = file.replace(`>${origins[uuid]}<`, `> ${translation}<`);
-      } else {
-        file = file.replace(`>${origins[uuid]}<`, `>${translation}<`);
+        translation = ` ${translation}`;
       }
+
+      if (origins[uuid].endsWith(' ') && !translation.endsWith(' ')) {
+        translation = `${translation} `;
+      }
+
+      file = file.replace(`>${origins[uuid]}<`, `>${translation}<`);
     });
 
     return file;
