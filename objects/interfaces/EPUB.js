@@ -33,6 +33,8 @@ export default class EpubInterface extends EventEmitter {
 
     this.files = {};
 
+    this.triggers = {};
+
     this.path = params.path;
 
     this.metadata = params.metadata || {};
@@ -153,9 +155,36 @@ export default class EpubInterface extends EventEmitter {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
   }
 
+  isUselessTag(tag) {
+    if (tag === 'a') return false;
+
+    if (tag === 'p') return false;
+
+    if (tag === 'em') return false;
+
+    if (tag === 'div') return false;
+
+    if (tag.match(/h[0-9]/)) return false;
+
+    return true;
+  }
+
   removeBadHtmlTag(html) {
-    html = html.replace(/<b\s*[^>]*>([A-Za-z])<\/b>/g, (match, letter) => letter);
-    html = html.replace(/<i\s*[^>]*>([A-Za-z])<\/i>/g, (match, letter) => letter);
+    html = html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
+      Logger.warn(`${this.getInfos()} - DELETE_XML_TAG`, match);
+
+      return '';
+    });
+
+    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,20}<\/\1>/g, (match, tag) => {
+      if (!this.isUselessTag(tag)) return match;
+
+      const replace = match.match(/>(.*?)</)[1];
+
+      Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, { match, tag, replace });
+
+      return replace;
+    });
 
     return html;
   }
@@ -194,17 +223,60 @@ export default class EpubInterface extends EventEmitter {
     return translation !== undefined;
   }
 
-  isValidTranslation(translation = '', origin = '') {
-    if (translation.length < origin.length / 10) {
-      Logger.info(`${this.getInfos()} - BAD_TRANSLATION`);
+  getDefaultTrigger(path, uuid) {
+    const origin = this.files?.[path]?.tokens?.[uuid] || '';
+    const translation = this.translations?.files?.[path]?.[uuid] || origin || '';
 
-      return false;
+    const length = (origin.length + translation.length) / 2;
+
+    if (length < 50) return 5;
+
+    if (length < 200) return 2;
+
+    return 1.5;
+  }
+
+  setTrigger(path, uuid) {
+    this.triggers[path] ||= {};
+
+    if (!this.triggers[path][uuid]) {
+      this.triggers[path][uuid] = this.getDefaultTrigger(path, uuid);
+    } else if (this.triggers[path][uuid] === 1.5) {
+      this.triggers[path][uuid] = 2;
+    } else if (this.triggers[path][uuid] === 2) {
+      this.triggers[path][uuid] = 3;
+    } else if (this.triggers[path][uuid] === 3) {
+      this.triggers[path][uuid] = 5;
+    } else if (this.triggers[path][uuid] === 5) {
+      this.triggers[path][uuid] = 10;
     }
+  }
 
-    if (origin.length < translation.length / 10) {
-      Logger.info(`${this.getInfos()} - BAD_TRANSLATION`);
+  isValidTranslation(translation = '', origin = '', path, uuid) {
+    this.setTrigger(path, uuid);
 
-      return false;
+    const trigger = this.triggers[path][uuid];
+
+    if (translation.length > 10 || origin.length > 10) {
+      if (translation.length < origin.length / trigger) {
+        Logger.warn(`${this.getInfos()} - STRANGE_LENGTH_TRANSLATION`, {
+          translation,
+          origin,
+          trigger,
+        });
+
+        return false;
+      }
+
+      if (origin.length < translation.length / trigger) {
+        Logger.warn(`${this.getInfos()} - STRANGE_LENGTH_TRANSLATION`, {
+          translation,
+          origin,
+          trigger,
+        });
+
+        return false;
+      }
     }
 
     return !translation.includes('\\"uuid-');
@@ -229,7 +301,7 @@ export default class EpubInterface extends EventEmitter {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
         if (
           this.isAlreadyTranslated(this.translations.files[path]?.[uuid]) &&
-          this.isValidTranslation(this.translations.files[path]?.[uuid], text)
+          this.isValidTranslation(this.translations.files[path]?.[uuid], text, path, uuid)
         ) {
           this.translations.files[path][uuid] = this.parseQuote(
             this.translations.files[path][uuid]
@@ -336,7 +408,7 @@ export default class EpubInterface extends EventEmitter {
 
       Object.keys(translations).forEach((file) => {
         Object.entries(translations[file]).forEach(([uuid, value]) => {
-          if (!this.isValidTranslation(value, query.data[file][uuid])) return;
+          if (!this.isValidTranslation(value, query.data[file][uuid], file, uuid)) return;
 
           this.translations.files[file] ||= {};
           this.translations.files[file][uuid] = this.parseQuote(value);
