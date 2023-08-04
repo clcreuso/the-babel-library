@@ -27,6 +27,11 @@ const OpenAI = new OpenAIApi(
 
 const MAX_TOKENS = 750;
 
+const TRANSLATION_RATIO = {
+  chars: 0.85, // text.source.length / text.destination.length
+  words: 0.9, // text.source.words / text.destination.words
+};
+
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
@@ -225,63 +230,128 @@ export default class EpubInterface extends EventEmitter {
     return translation !== undefined;
   }
 
-  getDefaultTrigger(path, uuid) {
-    const origin = this.files?.[path]?.tokens?.[uuid] || '';
-    const translation = this.translations?.files?.[path]?.[uuid] || origin || '';
+  countWords(text) {
+    if (text === '') return 0;
 
-    const length = (origin.length + translation.length) / 2;
-
-    if (length < 50) return 5;
-
-    if (length < 200) return 2;
-
-    return 1.5;
+    return text.trim().split(/\s+/).length;
   }
 
-  setTrigger(path, uuid) {
+  setTriggerChars(path, uuid) {
     this.triggers[path] ||= {};
+    this.triggers[path][uuid] ||= {};
 
-    if (!this.triggers[path][uuid]) {
-      this.triggers[path][uuid] = this.getDefaultTrigger(path, uuid);
-    } else if (this.triggers[path][uuid] === 1.5) {
-      this.triggers[path][uuid] = 2;
-    } else if (this.triggers[path][uuid] === 2) {
-      this.triggers[path][uuid] = 3;
-    } else if (this.triggers[path][uuid] === 3) {
-      this.triggers[path][uuid] = 5;
-    } else if (this.triggers[path][uuid] === 5) {
-      this.triggers[path][uuid] = 10;
+    if (!this.triggers[path][uuid].chars) {
+      this.triggers[path][uuid].chars = 1.1;
+    } else if (this.triggers[path][uuid].chars === 1.1) {
+      this.triggers[path][uuid].chars = 1.25;
+    } else if (this.triggers[path][uuid].chars === 1.25) {
+      this.triggers[path][uuid].chars = 1.5;
+    } else if (this.triggers[path][uuid].chars === 1.5) {
+      this.triggers[path][uuid].chars = 2;
+    } else if (this.triggers[path][uuid].chars === 2) {
+      this.triggers[path][uuid].chars = 3;
+    } else if (this.triggers[path][uuid].chars === 3) {
+      this.triggers[path][uuid].chars = 5;
+    } else if (this.triggers[path][uuid].chars === 5) {
+      this.triggers[path][uuid].chars = 10;
     }
+  }
+
+  setTriggerWords(path, uuid) {
+    this.triggers[path] ||= {};
+    this.triggers[path][uuid] ||= {};
+
+    if (!this.triggers[path][uuid].words) {
+      this.triggers[path][uuid].words = 1.1;
+    } else if (this.triggers[path][uuid].words === 1.1) {
+      this.triggers[path][uuid].words = 1.25;
+    } else if (this.triggers[path][uuid].words === 1.25) {
+      this.triggers[path][uuid].words = 1.5;
+    } else if (this.triggers[path][uuid].words === 1.5) {
+      this.triggers[path][uuid].words = 2;
+    } else if (this.triggers[path][uuid].words === 2) {
+      this.triggers[path][uuid].words = 3;
+    } else if (this.triggers[path][uuid].words === 3) {
+      this.triggers[path][uuid].words = 5;
+    } else if (this.triggers[path][uuid].words === 5) {
+      this.triggers[path][uuid].words = 10;
+    }
+  }
+
+  isValidTranslationChars(translation = '', origin = '', path, uuid) {
+    this.setTriggerChars(path, uuid);
+
+    const trigger = this.triggers[path][uuid].chars;
+
+    const originChars = origin.length;
+    const translationChars = Math.round(translation.length * TRANSLATION_RATIO.chars);
+
+    if (translationChars < originChars / trigger) {
+      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_CHARS_1`, {
+        origin,
+        translation,
+        length: { origin: originChars, translation: translationChars },
+        trigger,
+      });
+
+      return false;
+    }
+
+    if (originChars < translationChars / trigger) {
+      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_CHARS_2`, {
+        origin,
+        translation,
+        length: { origin: originChars, translation: translationChars },
+        trigger,
+      });
+
+      return false;
+    }
+
+    return true;
+  }
+
+  isValidTranslationWords(translation = '', origin = '', path, uuid) {
+    this.setTriggerWords(path, uuid);
+
+    const trigger = this.triggers[path][uuid].words;
+
+    const originWords = this.countWords(origin);
+    const translationWords = Math.round(this.countWords(translation) * TRANSLATION_RATIO.words);
+
+    if (translationWords < originWords / trigger) {
+      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_WORDS_1`, {
+        origin,
+        translation,
+        length: { origin: originWords, translation: translationWords },
+        trigger,
+      });
+
+      return false;
+    }
+
+    if (originWords < translationWords / trigger) {
+      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_WORDS_2`, {
+        origin,
+        translation,
+        length: { origin: originWords, translation: translationWords },
+        trigger,
+      });
+
+      return false;
+    }
+
+    return true;
   }
 
   isValidTranslation(translation = '', origin = '', path, uuid) {
-    this.setTrigger(path, uuid);
+    if (translation.includes('\\"uuid-')) return false;
 
-    const trigger = this.triggers[path][uuid];
+    if (!this.isValidTranslationChars(translation, origin, path, uuid)) return false;
 
-    if (translation.length > 10 || origin.length > 10) {
-      if (translation.length < origin.length / trigger) {
-        Logger.warn(`${this.getInfos()} - STRANGE_LENGTH_TRANSLATION`, {
-          translation,
-          origin,
-          trigger,
-        });
+    if (!this.isValidTranslationWords(translation, origin, path, uuid)) return false;
 
-        return false;
-      }
-
-      if (origin.length < translation.length / trigger) {
-        Logger.warn(`${this.getInfos()} - STRANGE_LENGTH_TRANSLATION`, {
-          translation,
-          origin,
-          trigger,
-        });
-
-        return false;
-      }
-    }
-
-    return !translation.includes('\\"uuid-');
+    return true;
   }
 
   /** **********************************************************************************************
@@ -301,10 +371,7 @@ export default class EpubInterface extends EventEmitter {
 
     Object.keys(this.files).forEach((path) => {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
-        if (
-          this.isAlreadyTranslated(this.translations.files[path]?.[uuid]) &&
-          this.isValidTranslation(this.translations.files[path]?.[uuid], text, path, uuid)
-        ) {
+        if (this.isAlreadyTranslated(this.translations.files[path]?.[uuid])) {
           this.translations.files[path][uuid] = this.parseQuote(
             this.translations.files[path][uuid]
           );
