@@ -164,6 +164,8 @@ export default class EpubInterface extends EventEmitter {
 
     if (tag === 'div') return false;
 
+    if (tag === 'title') return false;
+
     if (tag.match(/h[0-9]/)) return false;
 
     return true;
@@ -176,7 +178,7 @@ export default class EpubInterface extends EventEmitter {
       return '';
     });
 
-    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,20}<\/\1>/g, (match, tag) => {
+    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
       const replace = match.match(/>(.*?)</)[1];
