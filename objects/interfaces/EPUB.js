@@ -153,88 +153,8 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                           Helpers                                           **
+   **                                           Setters                                           **
    ********************************************************************************************** */
-
-  writeFile(path, content) {
-    fs.writeFileSync(path, content, { encoding: 'utf8' });
-  }
-
-  isUselessTag(tag) {
-    if (tag === 'a') return false;
-
-    if (tag === 'p') return false;
-
-    if (tag === 'em') return false;
-
-    if (tag === 'div') return false;
-
-    if (tag === 'title') return false;
-
-    if (tag.match(/h[0-9]/)) return false;
-
-    return true;
-  }
-
-  removeBadHtmlTag(html) {
-    html = html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
-      Logger.warn(`${this.getInfos()} - DELETE_XML_TAG`, match);
-
-      return '';
-    });
-
-    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
-      if (!this.isUselessTag(tag)) return match;
-
-      const replace = match.match(/>(.*?)</)[1];
-
-      Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, { match, tag, replace });
-
-      return replace;
-    });
-
-    return html;
-  }
-
-  readHTML(path) {
-    let html = this.readFile(path);
-
-    _.times(3, () => (html = this.removeBadHtmlTag(html)));
-
-    return html;
-  }
-
-  readFile(path) {
-    const buffer = fs.readFileSync(path);
-
-    return buffer.toString('utf8');
-  }
-
-  hasFinishQueries() {
-    return this.queries.every((query) => query.finish);
-  }
-
-  hasFullyQuery(data) {
-    const limit = isWithinTokenLimit(data, MAX_TOKENS);
-
-    return !limit;
-  }
-
-  hasTextTranslate(text) {
-    const regex = /^[^\p{L}]*$/u;
-
-    return !regex.test(text);
-  }
-
-  isAlreadyTranslated(translation) {
-    return translation !== undefined;
-  }
-
-  countWords(text) {
-    if (text === '') return 0;
-
-    return text.trim().split(/\s+/).length;
-  }
 
   setTriggerChars(path, uuid) {
     this.triggers[path] ||= {};
@@ -277,6 +197,173 @@ export default class EpubInterface extends EventEmitter {
       this.triggers[path][uuid].words = 10;
     }
   }
+
+  /** **********************************************************************************************
+   **                                           Helpers                                           **
+   ********************************************************************************************** */
+
+  writeFile(path, content) {
+    fs.writeFileSync(path, content, { encoding: 'utf8' });
+  }
+
+  readFile(path) {
+    const buffer = fs.readFileSync(path);
+
+    return buffer.toString('utf8');
+  }
+
+  isAlreadyTranslated(translation) {
+    return translation !== undefined;
+  }
+
+  hasFinishQueries() {
+    return this.queries.every((query) => query.finish);
+  }
+
+  hasFullyQuery(data) {
+    const limit = isWithinTokenLimit(data, MAX_TOKENS);
+
+    return !limit;
+  }
+
+  hasTextTranslate(text) {
+    const regex = /^[^\p{L}]*$/u;
+
+    return !regex.test(text);
+  }
+
+  countWords(text) {
+    if (text === '') return 0;
+
+    return text.trim().split(/\s+/).length;
+  }
+
+  /** **********************************************************************************************
+   **                                        Parsing: Tags                                        **
+   ********************************************************************************************** */
+
+  getOpenTag() {
+    return _.maxBy(Object.keys(this.tags.opens), (key) => this.tags.opens[key]);
+  }
+
+  getCloseTag() {
+    return _.maxBy(Object.keys(this.tags.closes), (key) => this.tags.closes[key]);
+  }
+
+  parseOpenTags(content) {
+    const matches = content.match(/<\w+[^>]*>/g) || [];
+
+    matches.forEach((match) => {
+      this.tags.opens[match] ||= 0;
+      this.tags.opens[match] += 1;
+    });
+  }
+
+  parseCloseTags(content) {
+    const matches = content.match(/<\/\w+>/g) || [];
+
+    matches.forEach((match) => {
+      this.tags.closes[match] ||= 0;
+      this.tags.closes[match] += 1;
+    });
+  }
+
+  setTags() {
+    const paths = this.getFiles(this.getRootPath());
+
+    this.tags = { opens: {}, closes: {} };
+
+    paths.forEach((path) => {
+      if (!path.endsWith('.html') && !path.endsWith('.xhtml')) return;
+
+      const content = this.readFile(path);
+
+      this.parseOpenTags(content);
+      this.parseCloseTags(content);
+    });
+  }
+
+  /** **********************************************************************************************
+   **                                   Parsing / Reading: HTML                                   **
+   ********************************************************************************************** */
+
+  isUselessTag(tag) {
+    if (tag === 'a') return false;
+
+    if (tag === 'p') return false;
+
+    if (tag === 'em') return false;
+
+    if (tag === 'div') return false;
+
+    if (tag === 'title') return false;
+
+    if (tag.match(/h[0-9]/)) return false;
+
+    return true;
+  }
+
+  isContentMatch(html, match) {
+    let index = 0;
+
+    const open = this.getOpenTag();
+    const close = this.getCloseTag();
+
+    while (html[index]) {
+      const openIndex = html.slice(index, html.length).indexOf(open);
+      const closeIndex = html.slice(index, html.length).indexOf(close);
+
+      if (openIndex === -1 || closeIndex === -1) return false;
+
+      const content = html.slice(openIndex + open.length + index, closeIndex + index);
+
+      if (content.includes(match)) return true;
+
+      index += closeIndex + 1;
+    }
+
+    return false;
+  }
+
+  removeBadHtmlTag(html, debug = false) {
+    html = html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
+      if (debug) {
+        Logger.warn(`${this.getInfos()} - DELETE_XML_TAG`, match);
+      }
+
+      return '';
+    });
+
+    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
+      if (!this.isUselessTag(tag)) return match;
+
+      if (!this.isContentMatch(html, match)) return match;
+
+      const replace = match.match(/>(.*?)</)[1];
+
+      if (replace === '') return match;
+
+      if (debug) {
+        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, { match, tag, replace });
+      }
+
+      return replace;
+    });
+
+    return html;
+  }
+
+  readHTML(path, debug = false) {
+    let html = this.readFile(path);
+
+    _.times(3, () => (html = this.removeBadHtmlTag(html, debug)));
+
+    return html;
+  }
+
+  /** **********************************************************************************************
+   **                                         Validators                                          **
+   ********************************************************************************************** */
 
   isValidTranslationChars(translation = '', origin = '', path, uuid) {
     this.setTriggerChars(path, uuid);
@@ -438,6 +525,8 @@ export default class EpubInterface extends EventEmitter {
   }
 
   parse() {
+    this.setTags();
+
     const paths = this.getFiles(this.getRootPath());
 
     paths.forEach((path) => {
@@ -452,7 +541,7 @@ export default class EpubInterface extends EventEmitter {
       if (path.endsWith('.html') || path.endsWith('.xhtml')) {
         this.files[path] = { path, tokens: {}, elements: 0 };
 
-        this.parseFile(this.files[path], this.readHTML(path));
+        this.parseFile(this.files[path], this.readHTML(path, true));
       }
     });
 
