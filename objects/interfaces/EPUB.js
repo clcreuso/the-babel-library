@@ -281,6 +281,11 @@ export default class EpubInterface extends EventEmitter {
       this.parseOpenTags(content);
       this.parseCloseTags(content);
     });
+
+    Logger.warn(`${this.getInfos()} - SET_TAGS`, {
+      open: this.getOpenTag(),
+      close: this.getCloseTag(),
+    });
   }
 
   /** **********************************************************************************************
@@ -291,8 +296,6 @@ export default class EpubInterface extends EventEmitter {
     if (tag === 'a') return false;
 
     if (tag === 'p') return false;
-
-    if (tag === 'em') return false;
 
     if (tag === 'div') return false;
 
@@ -341,7 +344,7 @@ export default class EpubInterface extends EventEmitter {
 
       const replace = match.match(/>(.*?)</)[1];
 
-      if (replace === '') return match;
+      if (!this.hasTextTranslate(replace)) return match;
 
       if (debug) {
         Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, { match, tag, replace });
