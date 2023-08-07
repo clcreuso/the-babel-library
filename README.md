@@ -67,9 +67,9 @@ The script will translate the EPUB file and create a translated version in the d
     - For languages like Chinese, it is possible that certain fields are not translated.
     In that case, you will need to remove them from ./db/Database.json and rerun the 
     script, or translate them manually and modify them in ./db/Database.json.
-    - Fix: vérification de cohérence (ratio mots et caractères), traduction macro (regroupement de paragraphe)
-    - Version stable: à partir du 5 août 2023
-    - Documentation complète: à venir...
+    - Fix: consistency check (word and character ratio), macro translation (paragraph grouping)
+    - Stable version: starting from August 5, 2023
+    - Complete documentation: coming soon...
 
 ## License
 
