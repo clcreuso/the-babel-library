@@ -73,7 +73,14 @@ export default class EpubInterface extends EventEmitter {
 
   getCoverPath() {
     if (!this.epub.manifest[this.epub.metadata.cover]) {
-      return _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href;
+      return (
+        _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href ||
+        _.find(this.epub.zip.names, (name) => {
+          if (name.endsWith('.xhtml')) return false;
+
+          return name.toLowerCase().includes('cover');
+        })
+      );
     }
 
     return this.epub.manifest[this.epub.metadata.cover]?.href;
@@ -161,8 +168,6 @@ export default class EpubInterface extends EventEmitter {
     this.triggers[path][uuid] ||= {};
 
     if (!this.triggers[path][uuid].chars) {
-      this.triggers[path][uuid].chars = 1.1;
-    } else if (this.triggers[path][uuid].chars === 1.1) {
       this.triggers[path][uuid].chars = 1.25;
     } else if (this.triggers[path][uuid].chars === 1.25) {
       this.triggers[path][uuid].chars = 1.5;
@@ -182,8 +187,6 @@ export default class EpubInterface extends EventEmitter {
     this.triggers[path][uuid] ||= {};
 
     if (!this.triggers[path][uuid].words) {
-      this.triggers[path][uuid].words = 1.1;
-    } else if (this.triggers[path][uuid].words === 1.1) {
       this.triggers[path][uuid].words = 1.25;
     } else if (this.triggers[path][uuid].words === 1.25) {
       this.triggers[path][uuid].words = 1.5;
@@ -235,7 +238,9 @@ export default class EpubInterface extends EventEmitter {
   countWords(text) {
     if (text === '') return 0;
 
-    return text.trim().split(/\s+/).length;
+    const words = text.split(/[\s,.-]+/);
+
+    return words.filter((word) => word.length > 0).length;
   }
 
   /** **********************************************************************************************
@@ -558,7 +563,37 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   fixStringJSON(jsonString) {
-    return jsonString.replace(/ "/g, ' \\"').replace(/" /g, '\\" ');
+    jsonString = jsonString.replace(/,}/g, '}');
+    jsonString = jsonString.replace(/,]/g, ']');
+
+    jsonString = jsonString.replace(/'/g, '"');
+
+    const keys = [];
+    let inQuotes = false;
+    let keyBuffer = '';
+
+    for (let i = 0; i < jsonString.length; i += 1) {
+      const ch = jsonString[i];
+      if (ch === '"' && !inQuotes) {
+        inQuotes = true;
+      } else if (ch === '"' && inQuotes) {
+        inQuotes = false;
+      } else if (ch === ':' && !inQuotes) {
+        keys.push(keyBuffer.trim());
+        keyBuffer = '';
+      } else if (!inQuotes) {
+        keyBuffer += ch;
+      }
+    }
+
+    keys.forEach((key) => {
+      if (!key.startsWith('"')) {
+        const regex = new RegExp(`${key}:`, 'g');
+        jsonString = jsonString.replace(regex, `"${key}":`);
+      }
+    });
+
+    return jsonString;
   }
 
   addTranslation(data, query, retry = false) {
