@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
 
+import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { createCanvas, loadImage } from 'canvas';
@@ -26,11 +27,6 @@ const OpenAI = new OpenAIApi(
 );
 
 const MAX_TOKENS = 750;
-
-const TRANSLATION_RATIO = {
-  chars: 0.85, // text.source.length / text.destination.length
-  words: 0.9, // text.source.words / text.destination.words
-};
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -379,13 +375,16 @@ export default class EpubInterface extends EventEmitter {
     const trigger = this.triggers[path][uuid].chars;
 
     const originChars = origin.length;
-    const translationChars = Math.round(translation.length * TRANSLATION_RATIO.chars);
+    const translationChars = Math.round(
+      translation.length * Database.getRatio(originChars, 'chars')
+    );
 
     if (translationChars < originChars / trigger) {
       Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_CHARS_1`, {
         origin,
         translation,
         length: { origin: originChars, translation: translationChars },
+        ratio: Database.getRatio(originChars, 'chars'),
         trigger,
       });
 
@@ -397,11 +396,14 @@ export default class EpubInterface extends EventEmitter {
         origin,
         translation,
         length: { origin: originChars, translation: translationChars },
+        ratio: Database.getRatio(originChars, 'chars'),
         trigger,
       });
 
       return false;
     }
+
+    Database.addRatio(originChars, translationChars, 'chars');
 
     return true;
   }
@@ -412,13 +414,16 @@ export default class EpubInterface extends EventEmitter {
     const trigger = this.triggers[path][uuid].words;
 
     const originWords = this.countWords(origin);
-    const translationWords = Math.round(this.countWords(translation) * TRANSLATION_RATIO.words);
+    const translationWords = Math.round(
+      this.countWords(translation) * Database.getRatio(originWords, 'words')
+    );
 
     if (translationWords < originWords / trigger) {
       Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_WORDS_1`, {
         origin,
         translation,
         length: { origin: originWords, translation: translationWords },
+        ratio: Database.getRatio(originWords, 'words'),
         trigger,
       });
 
@@ -430,11 +435,14 @@ export default class EpubInterface extends EventEmitter {
         origin,
         translation,
         length: { origin: originWords, translation: translationWords },
+        ratio: Database.getRatio(originWords, 'words'),
         trigger,
       });
 
       return false;
     }
+
+    Database.addRatio(originWords, translationWords, 'words');
 
     return true;
   }
@@ -562,44 +570,10 @@ export default class EpubInterface extends EventEmitter {
    **                                          Translate                                          **
    ********************************************************************************************** */
 
-  fixStringJSON(jsonString) {
-    jsonString = jsonString.replace(/,}/g, '}');
-    jsonString = jsonString.replace(/,]/g, ']');
-
-    jsonString = jsonString.replace(/'/g, '"');
-
-    const keys = [];
-    let inQuotes = false;
-    let keyBuffer = '';
-
-    for (let i = 0; i < jsonString.length; i += 1) {
-      const ch = jsonString[i];
-      if (ch === '"' && !inQuotes) {
-        inQuotes = true;
-      } else if (ch === '"' && inQuotes) {
-        inQuotes = false;
-      } else if (ch === ':' && !inQuotes) {
-        keys.push(keyBuffer.trim());
-        keyBuffer = '';
-      } else if (!inQuotes) {
-        keyBuffer += ch;
-      }
-    }
-
-    keys.forEach((key) => {
-      if (!key.startsWith('"')) {
-        const regex = new RegExp(`${key}:`, 'g');
-        jsonString = jsonString.replace(regex, `"${key}":`);
-      }
-    });
-
-    return jsonString;
-  }
-
   addTranslation(data, query, retry = false) {
     try {
       const translations = retry
-        ? JSON.parse(this.fixStringJSON(data.choices[0].message.content))
+        ? JSON.parse(jsonrepair(data.choices[0].message.content))
         : JSON.parse(data.choices[0].message.content);
 
       Object.keys(translations).forEach((file) => {
@@ -608,6 +582,8 @@ export default class EpubInterface extends EventEmitter {
 
           this.translations.files[file] ||= {};
           this.translations.files[file][uuid] = this.parseQuote(value);
+
+          if (!query.data[file]) return;
 
           delete query.data[file][uuid];
         });

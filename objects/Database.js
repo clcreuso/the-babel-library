@@ -1,3 +1,5 @@
+import Decimal from 'decimal.js';
+
 import { JsonDB, Config } from 'node-json-db';
 
 import Logger from '../config/modules/logger.js';
@@ -5,6 +7,8 @@ import Logger from '../config/modules/logger.js';
 class Database {
   constructor() {
     this.db = new JsonDB(new Config('./db/Database.json', true, true, '/'));
+
+    this.ratios = {};
 
     this.translations = {};
 
@@ -34,8 +38,6 @@ class Database {
   addTranslation(langage, file, uuid, value) {
     this.translations[langage][file] ||= {};
     this.translations[langage][file][uuid] = value;
-
-    this.startWriteTimeout();
   }
 
   addTranslations(langage, translations) {
@@ -54,7 +56,7 @@ class Database {
     return this.db
       .getData('/translations')
       .then((translations) => {
-        this.translations = translations;
+        this.translations = translations || {};
       })
       .catch(() => {
         Logger.error(`${this.getInfos()} - READ_TRANSLATIONS`);
@@ -62,10 +64,64 @@ class Database {
   }
 
   /** **********************************************************************************************
+   **                                         Translations                                        **
+   ********************************************************************************************** */
+
+  getRatioKey(origin, type) {
+    return new Decimal(origin)
+      .toNearest(type !== 'words' && origin > 100 ? 100 : 10, Decimal.ROUND_UP)
+      .toNumber();
+  }
+
+  getRatio(origin, type) {
+    this.ratios[type] ||= {};
+
+    const key = this.getRatioKey(origin, type);
+
+    if (this.ratios[type][key]) return this.ratios[type][key];
+
+    return type === 'words' ? 0.9 : 0.85;
+  }
+
+  addRatio(origin, translation, type) {
+    this.ratios[type] ||= {};
+
+    const ratio = origin / translation;
+    const key = this.getRatioKey(origin, type);
+
+    this.ratios[type][key] ||= type === 'words' ? 0.9 : 0.85;
+    this.ratios[type][key] = (99 * this.ratios[type][key] + ratio) / 100;
+
+    this.startWriteTimeout();
+  }
+
+  readRatios() {
+    return this.db
+      .getData('/ratios')
+      .then((ratios) => {
+        this.ratios = ratios || {};
+      })
+      .catch(() => {
+        Logger.error(`${this.getInfos()} - READ_RATIOS`);
+      });
+  }
+
+  /** **********************************************************************************************
    **                                        Timeout: write                                       **
    ********************************************************************************************** */
 
-  onWriteTimeout() {
+  writeRatiosTimeout() {
+    this.db
+      .push('/ratios', this.ratios)
+      .then(() => {
+        Logger.info(`${this.getInfos()} - WRITE_RATIOS`);
+      })
+      .catch((err) => {
+        Logger.fatal(`${this.getInfos()} - WRITE_RATIOS`, err);
+      });
+  }
+
+  writeTranslationsTimeout() {
     this.db
       .push('/translations', this.translations)
       .then(() => {
@@ -86,7 +142,8 @@ class Database {
     this.stopWriteTimeout();
 
     this.timers.write.id = setTimeout(() => {
-      this.onWriteTimeout();
+      this.writeRatiosTimeout();
+      this.writeTranslationsTimeout();
     }, this.timers.write.timeout);
   }
 
@@ -108,6 +165,7 @@ class Database {
   async init() {
     await this.initDatabase();
 
+    await this.readRatios();
     await this.readTranslations();
 
     Logger.info(`${this.getInfos()} - INIT`);
