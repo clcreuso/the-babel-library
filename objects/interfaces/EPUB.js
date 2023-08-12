@@ -9,6 +9,7 @@ import prompt from 'prompt';
 import crypto from 'crypto';
 import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
+import inquirer from 'inquirer';
 
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
@@ -26,7 +27,7 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 750;
+const MAX_TOKENS = 250;
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -47,7 +48,7 @@ export default class EpubInterface extends EventEmitter {
     };
 
     this.timers = {
-      queries: { id: null, interval: 1000 },
+      queries: { id: null, interval: 500 },
     };
   }
 
@@ -244,11 +245,13 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   getOpenTag() {
-    return _.maxBy(Object.keys(this.tags.opens), (key) => this.tags.opens[key]);
+    return this.tags.open || _.maxBy(Object.keys(this.tags.opens), (key) => this.tags.opens[key]);
   }
 
   getCloseTag() {
-    return _.maxBy(Object.keys(this.tags.closes), (key) => this.tags.closes[key]);
+    return (
+      this.tags.close || _.maxBy(Object.keys(this.tags.closes), (key) => this.tags.closes[key])
+    );
   }
 
   parseOpenTags(content) {
@@ -269,10 +272,50 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  setTags() {
+  chooseOpenTag() {
+    const choices = Object.entries(this.tags.opens)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map((entry) => entry[0]);
+
+    return inquirer
+      .prompt([
+        {
+          type: 'list',
+          name: 'choice',
+          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir la balise de paragraphe ouvrante:`,
+          choices,
+        },
+      ])
+      .then((answers) => {
+        this.tags.open = answers.choice;
+      });
+  }
+
+  chooseCloseTag() {
+    const choices = Object.entries(this.tags.closes)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map((entry) => entry[0]);
+
+    return inquirer
+      .prompt([
+        {
+          type: 'list',
+          name: 'choice',
+          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir la balise de paragraphe fermante:`,
+          choices,
+        },
+      ])
+      .then((answers) => {
+        this.tags.close = answers.choice;
+      });
+  }
+
+  async setTags() {
     const paths = this.getFiles(this.getRootPath());
 
-    this.tags = { opens: {}, closes: {} };
+    this.tags = { opens: {}, open: null, closes: {}, close: null };
 
     paths.forEach((path) => {
       if (!path.endsWith('.html') && !path.endsWith('.xhtml')) return;
@@ -282,6 +325,9 @@ export default class EpubInterface extends EventEmitter {
       this.parseOpenTags(content);
       this.parseCloseTags(content);
     });
+
+    await this.chooseOpenTag();
+    await this.chooseCloseTag();
 
     Logger.warn(`${this.getInfos()} - SET_TAGS`, {
       open: this.getOpenTag(),
@@ -540,8 +586,8 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  parse() {
-    this.setTags();
+  async parse() {
+    await this.setTags();
 
     const paths = this.getFiles(this.getRootPath());
 
