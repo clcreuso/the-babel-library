@@ -750,13 +750,16 @@ export default class EpubInterface extends EventEmitter {
   writeOPF(path) {
     let content = this.readFile(path);
 
+    content = content.replace(
+      /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/,
+      `$1${this.getMetadata()}$3`
+    );
+
     content = content.replace(/ xml:lang="[^"]*"/g, '');
 
     content = content.replace(/&(?!amp;)/g, '&amp;');
 
-    const regex = /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/;
-
-    this.writeFile(path, content.replace(regex, `$1${this.getMetadata()}$3`));
+    this.writeFile(path, content);
   }
 
   /** **********************************************************************************************
