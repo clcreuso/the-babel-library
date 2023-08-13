@@ -9,7 +9,6 @@ import prompt from 'prompt';
 import crypto from 'crypto';
 import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
-import inquirer from 'inquirer';
 
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
@@ -237,102 +236,7 @@ export default class EpubInterface extends EventEmitter {
 
     const words = text.split(/[\s,.-]+/);
 
-    return words.filter((word) => word.length > 0).length;
-  }
-
-  /** **********************************************************************************************
-   **                                        Parsing: Tags                                        **
-   ********************************************************************************************** */
-
-  getOpenTag() {
-    return this.tags.open || _.maxBy(Object.keys(this.tags.opens), (key) => this.tags.opens[key]);
-  }
-
-  getCloseTag() {
-    return (
-      this.tags.close || _.maxBy(Object.keys(this.tags.closes), (key) => this.tags.closes[key])
-    );
-  }
-
-  parseOpenTags(content) {
-    const matches = content.match(/<\w+[^>]*>/g) || [];
-
-    matches.forEach((match) => {
-      this.tags.opens[match] ||= 0;
-      this.tags.opens[match] += 1;
-    });
-  }
-
-  parseCloseTags(content) {
-    const matches = content.match(/<\/\w+>/g) || [];
-
-    matches.forEach((match) => {
-      this.tags.closes[match] ||= 0;
-      this.tags.closes[match] += 1;
-    });
-  }
-
-  chooseOpenTag() {
-    const choices = Object.entries(this.tags.opens)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-      .map((entry) => entry[0]);
-
-    return inquirer
-      .prompt([
-        {
-          type: 'list',
-          name: 'choice',
-          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir la balise de paragraphe ouvrante:`,
-          choices,
-        },
-      ])
-      .then((answers) => {
-        this.tags.open = answers.choice;
-      });
-  }
-
-  chooseCloseTag() {
-    const choices = Object.entries(this.tags.closes)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-      .map((entry) => entry[0]);
-
-    return inquirer
-      .prompt([
-        {
-          type: 'list',
-          name: 'choice',
-          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir la balise de paragraphe fermante:`,
-          choices,
-        },
-      ])
-      .then((answers) => {
-        this.tags.close = answers.choice;
-      });
-  }
-
-  async setTags() {
-    const paths = this.getFiles(this.getRootPath());
-
-    this.tags = { opens: {}, open: null, closes: {}, close: null };
-
-    paths.forEach((path) => {
-      if (!path.endsWith('.html') && !path.endsWith('.xhtml')) return;
-
-      const content = this.readFile(path);
-
-      this.parseOpenTags(content);
-      this.parseCloseTags(content);
-    });
-
-    await this.chooseOpenTag();
-    await this.chooseCloseTag();
-
-    Logger.warn(`${this.getInfos()} - SET_TAGS`, {
-      open: this.getOpenTag(),
-      close: this.getCloseTag(),
-    });
+    return words.filter((word) => this.hasTextTranslate(word)).length;
   }
 
   /** **********************************************************************************************
@@ -340,37 +244,25 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   isUselessTag(tag) {
-    if (tag === 'a') return false;
+    if (tag === 'b') return true;
 
-    if (tag === 'p') return false;
+    if (tag === 'i') return true;
 
-    if (tag === 'div') return false;
+    if (tag === 'em') return true;
 
-    if (tag === 'title') return false;
+    if (tag === 'strong') return true;
 
-    if (tag.match(/h[0-9]/)) return false;
+    if (tag === 'small') return true;
 
-    return true;
-  }
+    if (tag === 'mark') return true;
 
-  isContentMatch(html, match) {
-    let index = 0;
+    if (tag === 'del') return true;
 
-    const open = this.getOpenTag();
-    const close = this.getCloseTag();
+    if (tag === 'ins') return true;
 
-    while (html[index]) {
-      const openIndex = html.slice(index, html.length).indexOf(open);
-      const closeIndex = html.slice(index, html.length).indexOf(close);
+    if (tag === 'u') return true;
 
-      if (openIndex === -1 || closeIndex === -1) return false;
-
-      const content = html.slice(openIndex + open.length + index, closeIndex + index);
-
-      if (content.includes(match)) return true;
-
-      index += closeIndex + 1;
-    }
+    if (tag === 's') return true;
 
     return false;
   }
@@ -387,9 +279,7 @@ export default class EpubInterface extends EventEmitter {
     html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
-      if (!this.isContentMatch(html, match)) return match;
-
-      const replace = match.match(/>(.*?)</)[1];
+      const replace = match.match(/>(.*?)</)?.[1];
 
       if (!this.hasTextTranslate(replace)) return match;
 
@@ -587,8 +477,6 @@ export default class EpubInterface extends EventEmitter {
   }
 
   async parse() {
-    await this.setTags();
-
     const paths = this.getFiles(this.getRootPath());
 
     paths.forEach((path) => {
@@ -623,8 +511,12 @@ export default class EpubInterface extends EventEmitter {
         : JSON.parse(data.choices[0].message.content);
 
       Object.keys(translations).forEach((file) => {
+        if (!this.files[file]) return;
+
         Object.entries(translations[file]).forEach(([uuid, value]) => {
-          if (!this.isValidTranslation(value, query.data[file][uuid], file, uuid)) return;
+          if (!this.files[file].tokens[uuid]) return;
+
+          if (!this.isValidTranslation(value, query.data?.[file]?.[uuid], file, uuid)) return;
 
           this.translations.files[file] ||= {};
           this.translations.files[file][uuid] = this.parseQuote(value);
@@ -654,7 +546,13 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getFileTranslation(translations, uuid) {
-    return this.parseQuote(translations[uuid]?.replace(/&(?!amp;)/g, '&amp;'));
+    let result = this.parseQuote(translations[uuid]);
+
+    result = result.replace(/&(?!amp;)/g, '&amp;');
+
+    result = result.replace(/ xml:lang="[^"]*"/g, '');
+
+    return result;
   }
 
   translateFile(path, translations) {
@@ -850,7 +748,11 @@ export default class EpubInterface extends EventEmitter {
   }
 
   writeOPF(path) {
-    const content = this.readFile(path);
+    let content = this.readFile(path);
+
+    content = content.replace(/ xml:lang="[^"]*"/g, '');
+
+    content = content.replace(/&(?!amp;)/g, '&amp;');
 
     const regex = /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/;
 
