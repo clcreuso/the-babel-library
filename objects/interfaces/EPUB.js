@@ -72,7 +72,8 @@ export default class EpubInterface extends EventEmitter {
       return (
         _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href ||
         _.find(this.epub.zip.names, (name) => {
-          if (name.endsWith('.xhtml')) return false;
+          if (name.endsWith('.htm') || name.endsWith('.html') || name.endsWith('.xhtml'))
+            return false;
 
           return name.toLowerCase().includes('cover');
         })
@@ -488,7 +489,7 @@ export default class EpubInterface extends EventEmitter {
         this.writeCover(path);
       }
 
-      if (path.endsWith('.html') || path.endsWith('.xhtml')) {
+      if (path.endsWith('.htm') || path.endsWith('.html') || path.endsWith('.xhtml')) {
         this.files[path] = { path, tokens: {}, elements: 0 };
 
         this.parseFile(this.files[path], this.readHTML(path, true));
