@@ -26,7 +26,7 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 250;
+const MAX_TOKENS = 420;
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
