@@ -279,7 +279,7 @@ export default class EpubInterface extends EventEmitter {
       return '';
     });
 
-    html = html.replace(/>[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
+    html = html.replace(/>[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>/g, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
       const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
@@ -297,7 +297,7 @@ export default class EpubInterface extends EventEmitter {
       return `>${texts.join('')}`;
     });
 
-    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>[^<]*[a-z][^>]*</g, (match, tag) => {
+    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>[^<]*[a-z][^>]*</g, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
       const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
