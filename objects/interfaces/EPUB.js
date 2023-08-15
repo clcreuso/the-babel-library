@@ -265,6 +265,8 @@ export default class EpubInterface extends EventEmitter {
 
     if (tag === 's') return true;
 
+    if (tag === 'span') return true;
+
     return false;
   }
 
@@ -277,18 +279,40 @@ export default class EpubInterface extends EventEmitter {
       return '';
     });
 
-    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
+    html = html.replace(/>[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>/g, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
-      const replace = match.match(/>(.*?)</)?.[1];
+      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
 
-      if (!this.hasTextTranslate(replace)) return match;
+      if (!_.every(texts, (el) => this.hasTextTranslate(el))) return match;
 
       if (debug) {
-        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, { match, tag, replace });
+        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, {
+          match,
+          tag,
+          replace: texts.join(''),
+        });
       }
 
-      return replace;
+      return `>${texts.join('')}`;
+    });
+
+    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]{0,50}<\/\1>[^<]*[a-z][^>]*</g, (match, tag) => {
+      if (!this.isUselessTag(tag)) return match;
+
+      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
+
+      if (!_.every(texts, (el) => this.hasTextTranslate(el))) return match;
+
+      if (debug) {
+        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, {
+          match,
+          tag,
+          replace: texts.join(''),
+        });
+      }
+
+      return `${texts.join('')}<`;
     });
 
     return html;
