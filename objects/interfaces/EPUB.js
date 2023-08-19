@@ -104,9 +104,12 @@ export default class EpubInterface extends EventEmitter {
   getFilename(type = 'source') {
     const iso = this.getIsoCode(this.translations[type]);
     const title = this.metadata.title || this.epub.metadata.title;
+    const { subtitle } = this.metadata;
     const creator = this.metadata.creator || this.epub.metadata.creator;
 
-    return `${title} - ${creator} (${iso})`;
+    if (subtitle) return `${title} - ${subtitle} | ${creator} (${iso})`;
+
+    return `${title} | ${creator} (${iso})`;
   }
 
   getQuery() {
@@ -711,7 +714,21 @@ export default class EpubInterface extends EventEmitter {
   getMetadataTitle() {
     const title = this.metadata.title || this.epub.metadata.title;
 
-    return title ? `<dc:title>${title}</dc:title>` : ``;
+    return title
+      ? `<dc:title id="t1">${title}</dc:title>
+    <meta property="title-type" refines="#t1">main</meta>
+    <meta property="display-seq" refines="#t1">1</meta>`
+      : ``;
+  }
+
+  getMetadataSubtitle() {
+    const { subtitle } = this.metadata;
+
+    return subtitle
+      ? `<dc:title id="t2">${subtitle}</dc:title>
+    <meta property="title-type" refines="#t2">subtitle</meta>
+    <meta property="display-seq" refines="#t2">1</meta>`
+      : ``;
   }
 
   getMetadataCreator() {
@@ -763,6 +780,7 @@ export default class EpubInterface extends EventEmitter {
   getMetadata() {
     return `
     ${this.getMetadataTitle()}
+    ${this.getMetadataSubtitle()}
     ${this.getMetadataCreator()}
     ${this.getMetadataDate()}
     ${this.getMetadataPublisher()}
@@ -831,12 +849,14 @@ export default class EpubInterface extends EventEmitter {
       prompt.get(
         [
           { name: 'title', description: 'Book title', default: this.epub.metadata.title },
+          { name: 'subtitle', description: 'Book subtitle', default: this.epub.metadata.subtitle },
           { name: 'creator', description: 'Book creator', default: this.epub.metadata.creator },
           { name: 'series_name', description: 'Book series name' },
           { name: 'series_volume', description: 'Book series volume' },
         ],
         (_err, result) => {
           this.metadata.title = result.title;
+          this.metadata.subtitle = result.subtitle;
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
           this.metadata.series_volume = result.series_volume;
