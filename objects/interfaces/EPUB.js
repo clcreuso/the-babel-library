@@ -71,12 +71,16 @@ export default class EpubInterface extends EventEmitter {
     if (!this.epub.manifest[this.epub.metadata.cover]) {
       return (
         _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href ||
-        _.find(this.epub.zip.names, (name) => {
-          if (name.endsWith('.htm') || name.endsWith('.html') || name.endsWith('.xhtml'))
+        _.find(this.epub.manifest, (el) => {
+          if (el.href.endsWith('.htm') || el.href.endsWith('.html') || el.href.endsWith('.xhtml'))
             return false;
 
-          return name.toLowerCase().includes('cover');
-        })
+          return _.some(Object.values(el), (value) => {
+            if (typeof value !== 'string') return false;
+
+            return value.toLowerCase().includes('cover');
+          });
+        })?.href
       );
     }
 
