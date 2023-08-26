@@ -12,5 +12,5 @@ export default (data) =>
     `- الاسم: ${data.book_title}`,
     `- كتب بواسطة: ${data.book_author}`,
     `المحتوى المراد ترجمته:`,
-    JSON.stringify(data.content),
+    JSON.stringify(data.content, null, 2),
   ].join('\n');

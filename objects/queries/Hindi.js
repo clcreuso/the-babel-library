@@ -14,5 +14,5 @@ export default (data) =>
     `- नाम: ${data.book_title}`,
     `- लेखक: ${data.book_author}`,
     `अनुवाद करने वाली सामग्री:`,
-    JSON.stringify(data.content),
+    JSON.stringify(data.content, null, 2),
   ].join('\n');

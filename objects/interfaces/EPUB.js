@@ -7,10 +7,11 @@ import prompt from 'prompt';
 import inquirer from 'inquirer';
 
 import { EventEmitter } from 'events';
+import { jsonrepair } from 'jsonrepair';
 import { Configuration, OpenAIApi } from 'openai';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
+import { detectLanguageConsolidated } from '../modules/Language.js';
 
-import { jsonrepair } from 'jsonrepair';
 import Database from '../Database.js';
 
 import getContext from '../queries/Main.js';
@@ -24,7 +25,7 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 420;
+const MAX_TOKENS = 500;
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -33,7 +34,7 @@ export default class EpubInterface extends EventEmitter {
     this.setFile(params.path);
 
     this.params = {
-      user: params.user || 'Default',
+      user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
       model: params.model || 'gpt-3.5-turbo-0613',
@@ -149,9 +150,9 @@ export default class EpubInterface extends EventEmitter {
 
   replaceHtmlQuote(html) {
     return html.replace(/>([^<]+)</g, (match, content) => {
-      content = content.replace(/(“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, '"');
-      content = content.replace(/(^|\s)’|‘(\s|$)/g, '$1"$2');
-      content = content.replace(/(^|\s)‘|’(\s|$)/g, '$1"$2');
+      content = content.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, "'");
+      content = content.replace(/(^|\s)’|‘(\s|$)/g, "$1'$2");
+      content = content.replace(/(^|\s)‘|’(\s|$)/g, "$1'$2");
 
       return `>${content}<`;
     });
@@ -287,7 +288,18 @@ export default class EpubInterface extends EventEmitter {
     };
   }
 
-  getValidationTrigger(path, uuid, type) {
+  getValidationTriggerLanguage(path, uuid, type) {
+    this.triggers ||= {};
+    this.triggers[path] ||= {};
+    this.triggers[path][uuid] ||= {};
+
+    this.triggers[path][uuid][type] ||= 0;
+    this.triggers[path][uuid][type] += 1;
+
+    return this.triggers[path][uuid][type];
+  }
+
+  getValidationTriggerLength(path, uuid, type) {
     this.triggers ||= {};
     this.triggers[path] ||= {};
     this.triggers[path][uuid] ||= {};
@@ -309,8 +321,20 @@ export default class EpubInterface extends EventEmitter {
     return this.triggers[path][uuid][type];
   }
 
-  isValidTranslationType(translation, origin, file, uuid, type) {
-    const trigger = this.getValidationTrigger(file, uuid, type);
+  isValidTranslationLanguage(text, file, uuid) {
+    const textLanguage = detectLanguageConsolidated(text);
+
+    if (this.params.destination === textLanguage) return true;
+
+    const trigger = this.getValidationTriggerLanguage(file, uuid, 'lang');
+
+    return trigger < 5
+      ? this.invalidTranslation({ from: 'lang', text, textLanguage, trigger })
+      : true;
+  }
+
+  isValidTranslationLength(translation, origin, file, uuid, type) {
+    const trigger = this.getValidationTriggerLength(file, uuid, type);
 
     const counts = this.getValidationCounts(translation, origin, type);
 
@@ -330,25 +354,30 @@ export default class EpubInterface extends EventEmitter {
   isValidTranslation(translation, origin, file, uuid) {
     if (translation.includes('\\"uuid-')) return false;
 
-    if (!this.isValidTranslationType(translation, origin, file, uuid, 'chars')) return false;
+    const vChars = this.isValidTranslationLength(translation, origin, file, uuid, 'chars');
+    const vWords = this.isValidTranslationLength(translation, origin, file, uuid, 'words');
+    const vLang = this.isValidTranslationLanguage(translation, file, uuid);
 
-    if (!this.isValidTranslationType(translation, origin, file, uuid, 'words')) return false;
-
-    return true;
+    return vChars && vWords && vLang;
   }
 
   /** **********************************************************************************************
    **                                     Translate: Request                                      **
    ********************************************************************************************** */
 
-  parseTranslationJSON(data, retry = false) {
+  secureJsonParseJSON(str) {
     try {
-      return retry
-        ? JSON.parse(jsonrepair(data.choices[0].message.content))
-        : JSON.parse(data.choices[0].message.content);
-    } catch (_error) {
-      return !retry ? this.parseTranslationJSON(data, true) : undefined;
+      return JSON.parse(str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1));
+    } catch (error) {
+      return undefined;
     }
+  }
+
+  parseTranslationJSON(data) {
+    return (
+      this.secureJsonParseJSON(data.choices[0].message.content) ||
+      this.secureJsonParseJSON(jsonrepair(data.choices[0].message.content))
+    );
   }
 
   parseTranslationRequest(data, query) {
@@ -438,10 +467,17 @@ export default class EpubInterface extends EventEmitter {
   }
 
   startTranslateInterval() {
+    let index = 0;
     this.stopTranslateInterval();
 
     this.timers.queries.id = setInterval(() => {
-      this.onTranslateInterval();
+      index += 1;
+
+      if (index % 100) {
+        this.onTranslateInterval();
+      } else {
+        this.parseQueries();
+      }
     }, this.timers.queries.interval);
 
     Logger.info(`${this.getInfos()} - START_TRANSLATE_INTERVAL`);
@@ -458,7 +494,7 @@ export default class EpubInterface extends EventEmitter {
   parseQueries() {
     let id = 0;
 
-    this.queries ||= [];
+    this.queries = [];
 
     Object.keys(this.files).forEach((path) => {
       Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
@@ -474,6 +510,8 @@ export default class EpubInterface extends EventEmitter {
         if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
       });
     });
+
+    Logger.info(`${this.getInfos()} - PARSE_QUERIES`);
   }
 
   /** **********************************************************************************************

@@ -12,5 +12,5 @@ export default (data) =>
     `- Название: ${data.book_title}`,
     `- Автор: ${data.book_author}`,
     `Содержимое для перевода:`,
-    JSON.stringify(data.content),
+    JSON.stringify(data.content, null, 2),
   ].join('\n');

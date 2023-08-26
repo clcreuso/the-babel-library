@@ -12,5 +12,5 @@ export default (data) =>
     `- 名前：${data.book_title}`,
     `- 著者：${data.book_author}`,
     `翻訳する内容:`,
-    JSON.stringify(data.content),
+    JSON.stringify(data.content, null, 2),
   ].join('\n');

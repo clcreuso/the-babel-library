@@ -8,6 +8,7 @@ import getMandarinQuery from './Mandarin.js';
 import getPortugueseQuery from './Portuguese.js';
 import getRussianQuery from './Russian.js';
 import getSpanishQuery from './Spanish.js';
+import getMalayQuery from './Malay.js';
 
 const languageTranslations = {
   English: {
@@ -21,6 +22,7 @@ const languageTranslations = {
     Russian: 'Russian',
     Portuguese: 'Portuguese',
     Arabic: 'Arabic',
+    Malay: 'Malay',
   },
   Mandarin: {
     English: '英语',
@@ -33,6 +35,7 @@ const languageTranslations = {
     Russian: '俄语',
     Portuguese: '葡萄牙语',
     Arabic: '阿拉伯语',
+    Malay: '马来语',
   },
   Spanish: {
     English: 'Inglés',
@@ -45,6 +48,7 @@ const languageTranslations = {
     Russian: 'Ruso',
     Portuguese: 'Portugués',
     Arabic: 'Árabe',
+    Malay: 'Malayo',
   },
   Hindi: {
     English: 'अंग्रेज़ी',
@@ -57,6 +61,7 @@ const languageTranslations = {
     Russian: 'रूसी',
     Portuguese: 'पुर्तगाली',
     Arabic: 'अरबी',
+    Malay: 'मलय',
   },
   French: {
     English: 'Anglais',
@@ -69,6 +74,7 @@ const languageTranslations = {
     Russian: 'Russe',
     Portuguese: 'Portugais',
     Arabic: 'Arabe',
+    Malay: 'Malais',
   },
   German: {
     English: 'Englisch',
@@ -81,6 +87,7 @@ const languageTranslations = {
     Russian: 'Russisch',
     Portuguese: 'Portugiesisch',
     Arabic: 'Arabisch',
+    Malay: 'Malaiisch',
   },
   Japanese: {
     English: '英語',
@@ -93,6 +100,7 @@ const languageTranslations = {
     Russian: 'ロシア語',
     Portuguese: 'ポルトガル語',
     Arabic: 'アラビア語',
+    Malay: 'マレー語',
   },
   Russian: {
     English: 'Английский',
@@ -105,6 +113,7 @@ const languageTranslations = {
     Russian: 'Русский',
     Portuguese: 'Португальский',
     Arabic: 'Арабский',
+    Malay: 'Малайский',
   },
   Portuguese: {
     English: 'Inglês',
@@ -117,6 +126,7 @@ const languageTranslations = {
     Russian: 'Russo',
     Portuguese: 'Português',
     Arabic: 'Árabe',
+    Malay: 'Malaio',
   },
   Arabic: {
     English: 'الإنجليزية',
@@ -129,6 +139,20 @@ const languageTranslations = {
     Russian: 'الروسية',
     Portuguese: 'البرتغالية',
     Arabic: 'العربية',
+    Malay: 'الملايوية',
+  },
+  Malay: {
+    English: 'Inggeris',
+    Mandarin: 'Mandarin',
+    Spanish: 'Sepanyol',
+    Hindi: 'Hindi',
+    French: 'Perancis',
+    German: 'Jerman',
+    Japanese: 'Jepun',
+    Russian: 'Rusia',
+    Portuguese: 'Portugis',
+    Arabic: 'Arab',
+    Malay: 'Melayu',
   },
 };
 
@@ -196,6 +220,12 @@ export default (data) => {
     setData(data);
 
     return getSpanishQuery(data);
+  }
+
+  if (data.destination === 'Malay') {
+    setData(data);
+
+    return getMalayQuery(data);
   }
 
   return undefined;

@@ -12,5 +12,5 @@ export default (data) =>
     `- 名称：${data.book_title}`,
     `- 作者：${data.book_author}`,
     `要翻译的内容：`,
-    JSON.stringify(data.content),
+    JSON.stringify(data.content, null, 2),
   ].join('\n');
