@@ -1,19 +1,19 @@
+/* eslint-disable no-restricted-syntax */
+
 import Decimal from 'decimal.js';
 
-import { JsonDB, Config } from 'node-json-db';
+import Database from 'better-sqlite3';
 
-import Logger from '../config/modules/logger.js';
+import Logger from '../config/logger.js';
 
-class Database {
+class DatabaseInterface {
   constructor() {
-    this.db = new JsonDB(new Config('./db/Database.json', true, true, '/'));
-
     this.ratios = {};
 
     this.translations = {};
 
     this.timers = {
-      write: { id: null, timeout: 2500 },
+      write: { id: null, interval: 30000 },
     };
   }
 
@@ -25,151 +25,211 @@ class Database {
     return `DATABASE`;
   }
 
-  /** **********************************************************************************************
-   **                                         Translations                                        **
-   ********************************************************************************************** */
-
-  getTranslations(langage) {
-    this.translations[langage] ||= {};
-
-    return { ...this.translations[langage] };
-  }
-
-  addTranslation(langage, file, uuid, value) {
-    this.translations[langage][file] ||= {};
-    this.translations[langage][file][uuid] = value;
-  }
-
-  addTranslations(langage, translations) {
-    this.translations[langage] ||= {};
-
-    Object.keys(translations).forEach((file) => {
-      Object.entries(translations[file]).forEach(([uuid, value]) => {
-        this.addTranslation(langage, file, uuid, value);
-      });
-    });
-
-    this.startWriteTimeout();
-  }
-
-  readTranslations() {
-    return this.db
-      .getData('/translations')
-      .then((translations) => {
-        this.translations = translations || {};
-      })
-      .catch(() => {
-        Logger.error(`${this.getInfos()} - READ_TRANSLATIONS`);
-      });
-  }
-
-  /** **********************************************************************************************
-   **                                         Translations                                        **
-   ********************************************************************************************** */
-
-  getRatioKey(origin, type) {
+  getRatioLength(origin, type) {
     return new Decimal(origin)
       .toNearest(type !== 'words' && origin > 100 ? 100 : 10, Decimal.ROUND_UP)
       .toNumber();
   }
 
   getRatio(origin, type) {
+    const length = this.getRatioLength(origin, type);
+
     this.ratios[type] ||= {};
 
-    const key = this.getRatioKey(origin, type);
-
-    if (this.ratios[type][key]) return this.ratios[type][key];
-
-    return type === 'words' ? 0.9 : 0.85;
+    return this.ratios[type][length] || 1;
   }
 
-  addRatio(origin, translation, type) {
+  /** **********************************************************************************************
+   **                                           Setters                                           **
+   ********************************************************************************************** */
+
+  setHash(hash) {
+    this.hash = hash;
+  }
+
+  setUser(user) {
+    this.user = user;
+  }
+
+  setSource(source) {
+    this.source = source;
+  }
+
+  setDestination(destination) {
+    this.destination = destination;
+  }
+
+  /** **********************************************************************************************
+   **                                           Helpers                                           **
+   ********************************************************************************************** */
+
+  hasTranslation(file, uuid) {
+    this.translations[file] ||= {};
+
+    return this.translations[file][uuid] !== undefined;
+  }
+
+  /** **********************************************************************************************
+   **                                       Database: Ratios                                      **
+   ********************************************************************************************** */
+
+  setRatio(type, length, ratio) {
     this.ratios[type] ||= {};
+    this.ratios[type][length] = ratio;
+  }
 
+  manageRatio(origin, translation, type) {
     const ratio = origin / translation;
-    const key = this.getRatioKey(origin, type);
+    const length = this.getRatioLength(origin, type);
 
-    this.ratios[type][key] ||= type === 'words' ? 0.9 : 0.85;
-    this.ratios[type][key] = (99 * this.ratios[type][key] + ratio) / 100;
-
-    this.startWriteTimeout();
+    this.ratios[type] ||= {};
+    this.ratios[type][length] ||= ratio;
+    this.ratios[type][length] = (99 * this.ratios[type][length] + ratio) / 100;
   }
 
   readRatios() {
-    return this.db
-      .getData('/ratios')
-      .then((ratios) => {
-        this.ratios = ratios || {};
-      })
-      .catch(() => {
-        Logger.error(`${this.getInfos()} - READ_RATIOS`);
-      });
+    const ratios = this.db
+      .prepare('SELECT * FROM Ratios WHERE source = ? AND destination = ?')
+      .all(this.source, this.destination);
+
+    ratios.forEach((el) => this.setRatio(el.type, el.length, el.ratio));
+  }
+
+  writeRatios() {
+    const stmt = this.db.prepare(`
+        INSERT INTO Ratios (source, destination, type, length, ratio)
+        VALUES (?, ?, ?, ?, ?)
+    `);
+
+    for (const [type, units] of Object.entries(this.ratios)) {
+      for (const [unit, ratio] of Object.entries(units)) {
+        stmt.run(this.source, this.destination, type, unit, ratio);
+      }
+    }
+
+    Logger.info(`${this.getInfos()} - WRITE_RATIOS`);
+  }
+
+  /** **********************************************************************************************
+   **                                   Database: Translations                                    **
+   ********************************************************************************************** */
+
+  setTranslation(file, uuid, text) {
+    this.translations[file] ||= {};
+    this.translations[file][uuid] = text;
+  }
+
+  readTranslations() {
+    const translations = this.db
+      .prepare(
+        `SELECT * FROM Translations 
+        WHERE user = ? AND source = ? AND destination = ? AND hash = ?`
+      )
+      .all(this.user, this.source, this.destination, this.hash);
+
+    translations.forEach((el) => this.setTranslation(el.file, el.uuid, el.text));
+  }
+
+  writeTranslations() {
+    const stmt = this.db.prepare(`
+        INSERT INTO Translations 
+        (user, source, destination, hash, file, uuid, text)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const [file, uuids] of Object.entries(this.translations)) {
+      for (const [uuid, text] of Object.entries(uuids)) {
+        stmt.run(this.user, this.source, this.destination, this.hash, file, uuid, text);
+      }
+    }
+
+    Logger.info(`${this.getInfos()} - WRITE_TRANSLATIONS`);
   }
 
   /** **********************************************************************************************
    **                                        Timeout: write                                       **
    ********************************************************************************************** */
 
-  writeRatiosTimeout() {
-    this.db
-      .push('/ratios', this.ratios)
-      .then(() => {
-        Logger.info(`${this.getInfos()} - WRITE_RATIOS`);
-      })
-      .catch((err) => {
-        Logger.fatal(`${this.getInfos()} - WRITE_RATIOS`, err);
-      });
-  }
-
-  writeTranslationsTimeout() {
-    this.db
-      .push('/translations', this.translations)
-      .then(() => {
-        Logger.info(`${this.getInfos()} - WRITE_TRANSLATIONS`);
-      })
-      .catch((err) => {
-        Logger.fatal(`${this.getInfos()} - WRITE_TRANSLATIONS`, err);
-      });
-  }
-
-  stopWriteTimeout() {
+  stopWriteInterval() {
     clearInterval(this.timers.write.id);
 
     this.timers.write.id = null;
   }
 
-  startWriteTimeout() {
-    this.stopWriteTimeout();
+  startWriteInterval() {
+    this.stopWriteInterval();
 
-    this.timers.write.id = setTimeout(() => {
-      this.writeRatiosTimeout();
-      this.writeTranslationsTimeout();
-    }, this.timers.write.timeout);
+    this.timers.write.id = setInterval(() => {
+      this.writeRatios();
+      this.writeTranslations();
+    }, this.timers.write.interval);
+  }
+
+  /** **********************************************************************************************
+   **                                            Exit                                             **
+   ********************************************************************************************** */
+
+  exit() {
+    this.writeRatios();
+    this.writeTranslations();
+
+    setInterval(() => {
+      process.exit(0);
+    }, 1000);
   }
 
   /** **********************************************************************************************
    **                                            Init                                             **
    ********************************************************************************************** */
 
+  initTableRatios() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS Ratios (
+          id INTEGER PRIMARY KEY,
+          source TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          type TEXT NOT NULL,
+          length INTEGER NOT NULL,
+          ratio REAL NOT NULL
+      );
+    `);
+  }
+
+  initTableTranslations() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS Translations (
+          id INTEGER PRIMARY KEY,
+          user TEXT NOT NULL,
+          source TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          hash TEXT NOT NULL,
+          file TEXT NOT NULL,
+          uuid TEXT NOT NULL,
+          text TEXT NOT NULL
+      );
+    `);
+  }
+
   initDatabase() {
-    return this.db
-      .load()
-      .then(() => {
-        Logger.info(`${this.getInfos()} - INIT_DATABASE`);
-      })
-      .catch((err) => {
-        Logger.fatal(`${this.getInfos()} - INIT_DATABASE`, err);
-      });
+    try {
+      this.db = new Database('./db/Database.db');
+
+      this.initTableRatios();
+      this.initTableTranslations();
+
+      Logger.info(`${this.getInfos()} - INIT_DATABASE`);
+    } catch (err) {
+      Logger.error(`${this.getInfos()} - INIT_DATABASE`, err);
+    }
   }
 
   async init() {
     await this.initDatabase();
 
-    await this.readRatios();
-    await this.readTranslations();
+    this.startWriteInterval();
 
     Logger.info(`${this.getInfos()} - INIT`);
   }
 }
 
-export default new Database();
+export default new DatabaseInterface();

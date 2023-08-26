@@ -1,21 +1,20 @@
-/* eslint-disable max-len */
-/* eslint-disable import/no-unresolved */
-
-import Logger from './config/modules/logger.js';
+import EPUB from './objects/interfaces/EPUB.js';
 
 import Database from './objects/Database.js';
-import EPUB from './objects/interfaces/EPUB.js';
+
+import Logger from './config/logger.js';
 
 const epub = new EPUB({
   path: process.argv[2],
   source: 'English',
-  destination: 'Français',
+  destination: 'Russian',
 });
 
 const write = () => {
   epub.on('writed', () => {
     Logger.info('EPUB - WRITED');
-    setTimeout(() => process.exit(0), 5000);
+
+    Database.exit();
   });
 
   epub.write();

@@ -18,6 +18,3 @@ node_modules/
 
 # Mac OS files
 .DS_Store
-
-# Wallet file
-wallet*

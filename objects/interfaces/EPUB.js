@@ -1,24 +1,22 @@
-/* eslint-disable max-len */
-
 import _ from 'lodash';
 import fs from 'fs';
 import EPUB from 'epub';
 import zip from 'archiver';
 import dotenv from 'dotenv';
 import prompt from 'prompt';
-import crypto from 'crypto';
-import mime from 'mime-types';
-import iso6391 from 'iso-639-1';
+import inquirer from 'inquirer';
+
+import { EventEmitter } from 'events';
+import { Configuration, OpenAIApi } from 'openai';
+import { isWithinTokenLimit } from 'gpt-tokenizer';
 
 import { jsonrepair } from 'jsonrepair';
-import { EventEmitter } from 'events';
-import { isWithinTokenLimit } from 'gpt-tokenizer';
-import { createCanvas, loadImage } from 'canvas';
-import { Configuration, OpenAIApi } from 'openai';
-
 import Database from '../Database.js';
 
-import Logger from '../../config/modules/logger.js';
+import getContext from '../queries/Main.js';
+
+import Logger from '../../config/logger.js';
+import Toolbox from '../../config/Toolbox.js';
 
 dotenv.config();
 
@@ -32,19 +30,16 @@ export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
 
-    this.files = {};
+    this.setFile(params.path);
 
-    this.triggers = {};
-
-    this.path = params.path;
+    this.params = {
+      user: params.user || 'Default',
+      source: params.source || 'English',
+      destination: params.destination || 'French',
+      model: params.model || 'gpt-3.5-turbo-0613',
+    };
 
     this.metadata = params.metadata || {};
-
-    this.translations = {
-      source: params.source || 'English',
-      destination: params.destination || 'English',
-      files: {},
-    };
 
     this.timers = {
       queries: { id: null, interval: 500 },
@@ -59,38 +54,8 @@ export default class EpubInterface extends EventEmitter {
     return `EPUB (${this.getFilename()})`;
   }
 
-  getRootPath() {
-    return `./tmp/${this.getFileUUID()}`;
-  }
-
-  getFilePath(path) {
-    return `${this.getRootPath()}/${path}`;
-  }
-
-  getCoverPath() {
-    if (!this.epub.manifest[this.epub.metadata.cover]) {
-      return (
-        _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.href ||
-        _.find(this.epub.manifest, (el) => {
-          if (el.href.endsWith('.htm') || el.href.endsWith('.html') || el.href.endsWith('.xhtml'))
-            return false;
-
-          return _.some(Object.values(el), (value) => {
-            if (typeof value !== 'string') return false;
-
-            return value.toLowerCase().includes('cover');
-          });
-        })?.href
-      );
-    }
-
-    return this.epub.manifest[this.epub.metadata.cover]?.href;
-  }
-
-  getIsoCode(language) {
-    const code = iso6391.getCode(language);
-
-    return code ? code.toLowerCase() : null;
+  getQuery() {
+    return _.find(this.queries, (query) => !query.finish && !query.waiting);
   }
 
   getStatus() {
@@ -99,503 +64,150 @@ export default class EpubInterface extends EventEmitter {
     }/${this.queries.length}`;
   }
 
-  getFileUUID() {
-    const fileContent = fs.readFileSync(this.path);
+  getCover() {
+    return _.find(this.epub.manifest, (el) => {
+      if (!el['media-type'].includes('image')) return false;
 
-    return crypto.createHash('md5').update(fileContent).digest('hex');
-  }
+      return _.some(Object.values(el), (value) => {
+        if (typeof value !== 'string') return false;
 
-  getFilename(type = 'source') {
-    const iso = this.getIsoCode(this.translations[type]);
-    const title = this.metadata.title || this.epub.metadata.title;
-    const { subtitle } = this.metadata;
-    const creator = this.metadata.creator || this.epub.metadata.creator;
-
-    if (subtitle) return `${title} - ${subtitle} | ${creator} (${iso})`;
-
-    return `${title} | ${creator} (${iso})`;
-  }
-
-  getQuery() {
-    return _.find(this.queries, (query) => {
-      if (query.finish || query.waiting) return false;
-
-      return true;
+        return value.toLowerCase().includes('cover');
+      });
     });
   }
 
-  getFiles(dirpath, result = []) {
-    fs.readdirSync(dirpath).forEach((filepath) => {
-      const fullpath = `${dirpath}/${filepath}`;
+  getFilename() {
+    const iso = Toolbox.getIsoCode(this.params.destination);
 
-      if (fs.statSync(fullpath).isDirectory()) return this.getFiles(fullpath, result);
+    const { title, subtitle, creator } = this.metadata;
 
-      return result.push(fullpath);
-    });
+    if (title && subtitle && creator) return `${title} - ${subtitle} | ${creator} (${iso})`;
 
-    return result;
-  }
+    if (title && creator) return `${title} | ${creator} (${iso})`;
 
-  getQueryParams(query) {
-    return {
-      model: 'gpt-3.5-turbo-0613',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            `Contexte :`,
-            `- Traduire le contenu d'un livre vers le ${this.translations.destination}`,
-            `Règles :`,
-            `- Peut importe la langue source le text final doit etre en ${this.translations.destination}`,
-            `- Le contenu est au format JSON`,
-            `- Traduire UNIQUEMENT les valeurs du JSON`,
-            `- NE traduisez rien dans les clés JSON (chemin de fichier et UUID)`,
-            `- Préservez les espaces dans les valeurs de chaîne de caractères`,
-            `- La réponse doit être formatée de la même structure JSON`,
-            `Livre :`,
-            `- Titre : ${JSON.stringify(this.epub.metadata.title)}`,
-            `- Auteur : ${JSON.stringify(this.epub.metadata.creator)}`,
-            `Contenu :`,
-            JSON.stringify(query.data),
-          ].join('\n'),
-        },
-      ],
-    };
+    return `${title} (${iso})`;
   }
 
   /** **********************************************************************************************
    **                                           Setters                                           **
    ********************************************************************************************** */
 
-  setTriggerChars(path, uuid) {
-    this.triggers[path] ||= {};
-    this.triggers[path][uuid] ||= {};
-
-    if (!this.triggers[path][uuid].chars) {
-      this.triggers[path][uuid].chars = 1.25;
-    } else if (this.triggers[path][uuid].chars === 1.25) {
-      this.triggers[path][uuid].chars = 1.5;
-    } else if (this.triggers[path][uuid].chars === 1.5) {
-      this.triggers[path][uuid].chars = 2;
-    } else if (this.triggers[path][uuid].chars === 2) {
-      this.triggers[path][uuid].chars = 3;
-    } else if (this.triggers[path][uuid].chars === 3) {
-      this.triggers[path][uuid].chars = 5;
-    } else if (this.triggers[path][uuid].chars === 5) {
-      this.triggers[path][uuid].chars = 10;
-    }
+  setCover(cover) {
+    this.metadata.cover_id = cover.id;
+    this.metadata.cover_path = cover.href;
   }
 
-  setTriggerWords(path, uuid) {
-    this.triggers[path] ||= {};
-    this.triggers[path][uuid] ||= {};
+  setFile(path) {
+    this.file = {};
 
-    if (!this.triggers[path][uuid].words) {
-      this.triggers[path][uuid].words = 1.25;
-    } else if (this.triggers[path][uuid].words === 1.25) {
-      this.triggers[path][uuid].words = 1.5;
-    } else if (this.triggers[path][uuid].words === 1.5) {
-      this.triggers[path][uuid].words = 2;
-    } else if (this.triggers[path][uuid].words === 2) {
-      this.triggers[path][uuid].words = 3;
-    } else if (this.triggers[path][uuid].words === 3) {
-      this.triggers[path][uuid].words = 5;
-    } else if (this.triggers[path][uuid].words === 5) {
-      this.triggers[path][uuid].words = 10;
-    }
+    this.file.path = path;
+    this.file.hash = Toolbox.getFileHash(path);
+    this.file.folder = `./tmp/${this.file.hash}`;
   }
 
   /** **********************************************************************************************
    **                                           Helpers                                           **
    ********************************************************************************************** */
 
+  isOPF(path) {
+    return path.endsWith('.opf');
+  }
+
+  isCover(path) {
+    return path.endsWith(this.metadata.cover_path);
+  }
+
+  isHTML(path) {
+    return path.endsWith('.htm') || path.endsWith('.html') || path.endsWith('.xhtml');
+  }
+
+  isUselessTag(tag) {
+    return ['b', 'i', 'em', 'strong', 'small', 'mark', 'del', 'ins', 'u', 's', 'span'].includes(
+      tag
+    );
+  }
+
+  hasFullyQuery(data) {
+    return !isWithinTokenLimit(data, MAX_TOKENS);
+  }
+
+  hasFinishTranslation() {
+    return this.queries.every((query) => query.finish);
+  }
+
+  readFile(path) {
+    return fs.readFileSync(path).toString('utf8');
+  }
+
   writeFile(path, content) {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
   }
 
-  readFile(path) {
-    const buffer = fs.readFileSync(path);
-
-    return buffer.toString('utf8');
-  }
-
-  isAlreadyTranslated(translation) {
-    return translation !== undefined;
-  }
-
-  hasFinishQueries() {
-    return this.queries.every((query) => query.finish);
-  }
-
-  hasFullyQuery(data) {
-    const limit = isWithinTokenLimit(data, MAX_TOKENS);
-
-    return !limit;
-  }
-
-  hasTextTranslate(text) {
-    const regex = /^[^\p{L}]*$/u;
-
-    return !regex.test(text);
-  }
-
-  countWords(text) {
-    if (text === '') return 0;
-
-    const words = text.split(/[\s,.-]+/);
-
-    return words.filter((word) => this.hasTextTranslate(word)).length;
-  }
-
   /** **********************************************************************************************
-   **                                   Parsing / Reading: HTML                                   **
+   **                                        Helpers: HTML                                        **
    ********************************************************************************************** */
 
-  isUselessTag(tag) {
-    if (tag === 'b') return true;
+  replaceHtmlQuote(html) {
+    return html.replace(/>([^<]+)</g, (match, content) => {
+      content = content.replace(/(“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, '"');
+      content = content.replace(/(^|\s)’|‘(\s|$)/g, '$1"$2');
+      content = content.replace(/(^|\s)‘|’(\s|$)/g, '$1"$2');
 
-    if (tag === 'i') return true;
-
-    if (tag === 'em') return true;
-
-    if (tag === 'strong') return true;
-
-    if (tag === 'small') return true;
-
-    if (tag === 'mark') return true;
-
-    if (tag === 'del') return true;
-
-    if (tag === 'ins') return true;
-
-    if (tag === 'u') return true;
-
-    if (tag === 's') return true;
-
-    if (tag === 'span') return true;
-
-    return false;
+      return `>${content}<`;
+    });
   }
 
-  removeBadHtmlTag(html, debug = false) {
-    html = html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
-      if (debug) {
-        Logger.warn(`${this.getInfos()} - DELETE_XML_TAG`, match);
-      }
+  removeXmlTags(html) {
+    return html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
+      Logger.debug(`${this.getInfos()} - DELETE_XML_TAG`, match);
 
       return '';
     });
-
-    html = html.replace(/>[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>/g, (match, tag) => {
-      if (!this.isUselessTag(tag)) return match;
-
-      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
-
-      if (!_.every(texts, (el) => this.hasTextTranslate(el))) return match;
-
-      if (debug) {
-        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, {
-          match,
-          tag,
-          replace: texts.join(''),
-        });
-      }
-
-      return `>${texts.join('')}`;
-    });
-
-    html = html.replace(/<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>[^<]*[a-z][^>]*</g, (match, tag) => {
-      if (!this.isUselessTag(tag)) return match;
-
-      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
-
-      if (!_.every(texts, (el) => this.hasTextTranslate(el))) return match;
-
-      if (debug) {
-        Logger.warn(`${this.getInfos()} - REPLACE_HTML_TAG`, {
-          match,
-          tag,
-          replace: texts.join(''),
-        });
-      }
-
-      return `${texts.join('')}<`;
-    });
-
-    return html;
   }
 
-  readHTML(path, debug = false) {
+  removeHtmlTags(html, regex, type) {
+    return html.replace(regex, (match, tag) => {
+      if (!this.isUselessTag(tag)) return match;
+
+      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
+
+      if (!_.every(texts, (el) => Toolbox.hasText(el))) return match;
+
+      // Logger.debug(`${this.getInfos()} - REPLACE_HTML_TAG`, {
+      //   match,
+      //   tag,
+      //   replace: texts.join(''),
+      // });
+
+      return type === 'prefix' ? `>${texts.join('')}` : `${texts.join('')}<`;
+    });
+  }
+
+  readHTML(path) {
     let html = this.readFile(path);
 
-    _.times(3, () => (html = this.removeBadHtmlTag(html, debug)));
+    html = this.removeXmlTags(html);
+    html = this.replaceHtmlQuote(html);
+
+    _.times(5, () => {
+      html = this.removeHtmlTags(html, />[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>/g, 'prefix');
+      html = this.removeHtmlTags(html, /<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>[^<]*[a-z][^>]*</g, 'suffix');
+    });
 
     return html;
   }
 
   /** **********************************************************************************************
-   **                                         Validators                                          **
+   **                                            Write                                            **
    ********************************************************************************************** */
-
-  isValidTranslationChars(translation = '', origin = '', path, uuid) {
-    this.setTriggerChars(path, uuid);
-
-    const trigger = this.triggers[path][uuid].chars;
-
-    const originChars = origin.length;
-    const translationChars = Math.round(
-      translation.length * Database.getRatio(originChars, 'chars')
-    );
-
-    if (translationChars < originChars / trigger) {
-      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_CHARS_1`, {
-        origin,
-        translation,
-        length: { origin: originChars, translation: translationChars },
-        ratio: Database.getRatio(originChars, 'chars'),
-        trigger,
-      });
-
-      return false;
-    }
-
-    if (originChars < translationChars / trigger) {
-      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_CHARS_2`, {
-        origin,
-        translation,
-        length: { origin: originChars, translation: translationChars },
-        ratio: Database.getRatio(originChars, 'chars'),
-        trigger,
-      });
-
-      return false;
-    }
-
-    Database.addRatio(originChars, translationChars, 'chars');
-
-    return true;
-  }
-
-  isValidTranslationWords(translation = '', origin = '', path, uuid) {
-    this.setTriggerWords(path, uuid);
-
-    const trigger = this.triggers[path][uuid].words;
-
-    const originWords = this.countWords(origin);
-    const translationWords = Math.round(
-      this.countWords(translation) * Database.getRatio(originWords, 'words')
-    );
-
-    if (translationWords < originWords / trigger) {
-      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_WORDS_1`, {
-        origin,
-        translation,
-        length: { origin: originWords, translation: translationWords },
-        ratio: Database.getRatio(originWords, 'words'),
-        trigger,
-      });
-
-      return false;
-    }
-
-    if (originWords < translationWords / trigger) {
-      Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION_WORDS_2`, {
-        origin,
-        translation,
-        length: { origin: originWords, translation: translationWords },
-        ratio: Database.getRatio(originWords, 'words'),
-        trigger,
-      });
-
-      return false;
-    }
-
-    Database.addRatio(originWords, translationWords, 'words');
-
-    return true;
-  }
-
-  isValidTranslation(translation = '', origin = '', path, uuid) {
-    if (translation.includes('\\"uuid-')) return false;
-
-    if (!this.isValidTranslationChars(translation, origin, path, uuid)) return false;
-
-    if (!this.isValidTranslationWords(translation, origin, path, uuid)) return false;
-
-    return true;
-  }
-
-  /** **********************************************************************************************
-   **                                            Parse                                            **
-   ********************************************************************************************** */
-
-  parseQuote(text) {
-    return text
-      .replace(/(“ | ”|《 | 》|« | »|<< | >>)/g, '"')
-      .replace(/(“|”|《|》|«|»|<<|>>)/g, '"');
-  }
-
-  parseQueries() {
-    this.queries ||= [];
-
-    let id = 0;
-
-    Object.keys(this.files).forEach((path) => {
-      Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
-        if (this.isAlreadyTranslated(this.translations.files[path]?.[uuid])) {
-          this.translations.files[path][uuid] = this.parseQuote(
-            this.translations.files[path][uuid]
-          );
-
-          Database.addTranslation(
-            this.translations.destination,
-            path,
-            uuid,
-            this.translations.files[path][uuid]
-          );
-
-          Logger.info(`${this.getInfos()} - ALREADY_TRANSLATED`, { path, uuid });
-        } else {
-          if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
-
-          this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
-
-          this.queries[id].data[path] ||= {};
-          this.queries[id].data[path][uuid] = this.parseQuote(text);
-
-          if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
-        }
-      });
-    });
-  }
-
-  skipTag(html, index, tag = '</code>') {
-    while (index < html.length) {
-      if (html.slice(index, index + tag.length) === tag) break;
-
-      index += 1;
-    }
-
-    return index + tag.length - 1;
-  }
-
-  parseFile(file, html) {
-    let skip = false;
-
-    for (let index = 0; index < html.length; index += 1) {
-      if (html.slice(index, index + 6) === '<style') skip = true;
-
-      if (html.slice(index, index + 4) === '<pre') index = this.skipTag(html, index, '</pre>');
-
-      if (html.slice(index, index + 5) === '<code') index = this.skipTag(html, index, '</code>');
-
-      if (html[index] === '>' && !skip) {
-        file.elements += 1;
-
-        while (html[index + 1] && html[index + 1] !== '<') {
-          index += 1;
-
-          file.tokens[`uuid-${file.elements}`] ||= '';
-          file.tokens[`uuid-${file.elements}`] += html[index];
-        }
-
-        if (!this.hasTextTranslate(file.tokens[`uuid-${file.elements}`])) {
-          delete file.tokens[`uuid-${file.elements}`];
-        }
-      } else if (html[index] === '>' && skip) {
-        skip = false;
-      }
-    }
-  }
-
-  async parse() {
-    const paths = this.getFiles(this.getRootPath());
-
-    paths.forEach((path) => {
-      if (path.endsWith('.opf')) {
-        this.writeOPF(path);
-      }
-
-      if (path.endsWith(this.getCoverPath())) {
-        this.writeCover(path);
-      }
-
-      if (path.endsWith('.htm') || path.endsWith('.html') || path.endsWith('.xhtml')) {
-        this.files[path] = { path, tokens: {}, elements: 0 };
-
-        this.parseFile(this.files[path], this.readHTML(path, true));
-      }
-    });
-
-    this.parseQueries();
-
-    this.emit('parsed');
-  }
-
-  /** **********************************************************************************************
-   **                                          Translate                                          **
-   ********************************************************************************************** */
-
-  addTranslation(data, query, retry = false) {
-    try {
-      const translations = retry
-        ? JSON.parse(jsonrepair(data.choices[0].message.content))
-        : JSON.parse(data.choices[0].message.content);
-
-      Object.keys(translations).forEach((file) => {
-        if (!this.files[file]) return;
-
-        Object.entries(translations[file]).forEach(([uuid, value]) => {
-          if (!this.files[file].tokens[uuid]) return;
-
-          if (!this.isValidTranslation(value, query.data?.[file]?.[uuid], file, uuid)) return;
-
-          this.translations.files[file] ||= {};
-          this.translations.files[file][uuid] = this.parseQuote(value);
-
-          if (!query.data[file]) return;
-
-          delete query.data[file][uuid];
-        });
-
-        if (_.isEmpty(query.data[file])) delete query.data[file];
-      });
-
-      Database.addTranslations(this.translations.destination, translations);
-
-      if (_.isEmpty(query.data)) query.finish = true;
-
-      Logger.info(`${this.getInfos()} - SUCCESS_QUERY ${query.id}`);
-    } catch (error) {
-      if (!retry) {
-        this.addTranslation(data, query, true);
-      } else {
-        Logger.error(`${this.getInfos()} - INVALID_JSON`, data.choices[0].message.content);
-
-        throw error;
-      }
-    }
-  }
-
-  getFileTranslation(translations, uuid) {
-    let result = this.parseQuote(translations[uuid]);
-
-    result = result.replace(/&(?!amp;)/g, '&amp;');
-
-    result = result.replace(/ xml:lang="[^"]*"/g, '');
-
-    return result;
-  }
 
   translateFile(path, translations) {
     const origins = this.files[path].tokens;
 
-    let file = this.readHTML(path);
+    return Object.keys(translations).reduce((file, uuid) => {
+      if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return file;
 
-    Object.keys(translations).forEach((uuid) => {
-      if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return;
-
-      let translation = this.getFileTranslation(translations, uuid);
+      let translation = translations[uuid].replace(/&(?!amp;)/g, '&amp;');
 
       if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
         translation = ` ${translation}`;
@@ -605,219 +217,13 @@ export default class EpubInterface extends EventEmitter {
         translation = `${translation} `;
       }
 
-      file = file.replace(`>${origins[uuid]}<`, `>${translation}<`);
-    });
-
-    return file;
+      return file.replace(`>${origins[uuid]}<`, `>${translation}<`);
+    }, this.readHTML(path));
   }
 
-  translateFiles() {
-    const rootPath = this.getRootPath();
+  writeEPUB() {
+    const destPath = `./library/${this.getFilename()}.epub`;
 
-    Object.entries(this.translations.files).forEach(([path, translations]) => {
-      if (!path.startsWith(rootPath) || !this.files[path]) return;
-
-      const file = this.translateFile(path, translations);
-
-      this.writeFile(path, file);
-
-      Logger.info(`${this.getInfos()} - WRITE_FILE "${path}"`);
-    });
-
-    this.stopQueriesInterval();
-
-    this.emit('translated');
-  }
-
-  onQueriesInterval() {
-    const query = this.getQuery();
-
-    if (!query) return;
-
-    query.waiting = true;
-
-    Logger.info(`${this.getInfos()} - START_QUERY ${query.id}`);
-
-    OpenAI.createChatCompletion(this.getQueryParams(query))
-      .then((response) => {
-        query.waiting = false;
-
-        this.addTranslation(response.data, query);
-      })
-      .catch((err) => {
-        query.waiting = false;
-
-        Logger.error(`${this.getInfos()} - ERROR_QUERY ${query.id}`, err.response?.data || err);
-      });
-  }
-
-  stopQueriesInterval() {
-    clearInterval(this.timers.queries.id);
-
-    this.timers.queries.id = null;
-  }
-
-  startQueriesInterval() {
-    this.stopQueriesInterval();
-
-    this.timers.queries.id = setInterval(() => {
-      this.onQueriesInterval();
-
-      if (!this.hasFinishQueries()) return;
-
-      this.translateFiles();
-    }, this.timers.queries.interval);
-  }
-
-  translate() {
-    this.startQueriesInterval();
-  }
-
-  /** **********************************************************************************************
-   **                                        Write: Cover                                         **
-   ********************************************************************************************** */
-
-  async writeCover(path) {
-    const image = await loadImage(path);
-
-    const canvas = createCanvas(800, 1280);
-    const context = canvas.getContext('2d');
-
-    context.drawImage(image, 0, 0, 800, 1280);
-
-    context.beginPath();
-    context.moveTo(0, 0);
-    context.lineTo(0, 90);
-    context.lineTo(275, 90);
-    context.lineTo(350, 0);
-    context.closePath();
-
-    context.lineWidth = 8;
-    context.strokeStyle = '#a20000';
-    context.stroke();
-
-    context.fillStyle = '#fff9b8';
-    context.fill();
-
-    context.fillStyle = '#16180f';
-    context.textAlign = 'center';
-    context.font = '34px "Times New Roman"';
-    context.fillText('The Babel Library', 160, 45);
-    context.font = '20px "Times New Roman"';
-    context.fillText(`Translated from "${this.translations.source}"`, 142, 70);
-
-    const buffer = canvas.toBuffer(mime.lookup(path));
-
-    fs.writeFileSync(path, buffer);
-  }
-
-  /** **********************************************************************************************
-   **                                         Write: OPF                                          **
-   ********************************************************************************************** */
-
-  getMetadataTitle() {
-    const title = this.metadata.title || this.epub.metadata.title;
-
-    return title
-      ? `<dc:title id="t1">${title}</dc:title>
-    <meta property="title-type" refines="#t1">main</meta>
-    <meta property="display-seq" refines="#t1">1</meta>`
-      : ``;
-  }
-
-  getMetadataSubtitle() {
-    const { subtitle } = this.metadata;
-
-    return subtitle
-      ? `<dc:title id="t2">${subtitle}</dc:title>
-    <meta property="title-type" refines="#t2">subtitle</meta>
-    <meta property="display-seq" refines="#t2">1</meta>`
-      : ``;
-  }
-
-  getMetadataCreator() {
-    const creator = this.metadata.creator || this.epub.metadata.creator;
-
-    return creator ? `<dc:creator>${creator}</dc:creator>` : ``;
-  }
-
-  getMetadataDate() {
-    const { date } = this.epub.metadata;
-
-    return date ? `<dc:date>${date}</dc:date>` : ``;
-  }
-
-  getMetadataPublisher() {
-    const { publisher } = this.epub.metadata || 'The Babel Library';
-
-    return publisher ? `<dc:publisher>${publisher}</dc:publisher>` : ``;
-  }
-
-  getMetadataLanguage() {
-    const iso = this.getIsoCode(this.translations.destination);
-
-    return iso ? `<dc:language>${iso}</dc:language>` : ``;
-  }
-
-  getMetadataSerie() {
-    const { series_name } = this.metadata;
-
-    return series_name ? `<meta name="calibre:series" content="${series_name}"/>` : ``;
-  }
-
-  getMetadataSeriesIndex() {
-    const { series_volume } = this.metadata;
-
-    return series_volume ? `<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
-  }
-
-  getMetadataCover() {
-    let { cover } = this.epub.metadata;
-
-    if (!_.find(this.epub.manifest, { id: cover })) {
-      cover = _.find(this.epub.manifest, (el) => el.href.includes(this.epub.metadata.cover))?.id;
-    }
-
-    return cover ? `<meta name="cover" content="${cover}"/>` : ``;
-  }
-
-  getMetadata() {
-    return `
-    ${this.getMetadataTitle()}
-    ${this.getMetadataSubtitle()}
-    ${this.getMetadataCreator()}
-    ${this.getMetadataDate()}
-    ${this.getMetadataPublisher()}
-    ${this.getMetadataLanguage()}
-    ${this.getMetadataSerie()}
-    ${this.getMetadataSeriesIndex()}
-    ${this.getMetadataCover()}`.replace(/^\s*\n/gm, '');
-  }
-
-  writeOPF(path) {
-    let content = this.readFile(path);
-
-    content = content.replace(
-      /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/,
-      `$1${this.getMetadata()}$3`
-    );
-
-    content = content.replace(/ xml:lang="[^"]*"/g, '');
-
-    content = content.replace(/&(?!amp;)/g, '&amp;');
-
-    this.writeFile(path, content);
-  }
-
-  /** **********************************************************************************************
-   **                                            Write                                            **
-   ********************************************************************************************** */
-
-  write() {
-    const rootPath = this.getRootPath();
-    const destPath = `./library/destinations/${this.getFilename('destination')}.epub`;
-
-    const files = this.getFiles(rootPath);
     const output = fs.createWriteStream(destPath);
     const archive = zip('zip', { store: false });
 
@@ -833,22 +239,343 @@ export default class EpubInterface extends EventEmitter {
       this.emit('writed');
     });
 
-    files.forEach((file) => {
+    this.file.paths.forEach((file) => {
       const content = fs.readFileSync(file);
 
       archive.append(content, {
-        name: file.replace(`${rootPath}/`, ''),
+        name: file.replace(`${this.file.folder}/`, ''),
       });
     });
 
     archive.finalize();
   }
 
+  write() {
+    Object.entries(Database.translations).forEach(([path, translations]) => {
+      if (!path.startsWith(this.file.folder) || !this.files[path]) return;
+
+      const file = this.translateFile(path, translations);
+
+      this.writeFile(path, file);
+
+      Logger.info(`${this.getInfos()} - WRITE_FILE "${path}"`);
+    });
+
+    this.writeEPUB();
+  }
+
   /** **********************************************************************************************
-   **                                            Init                                             **
+   **                                   Translate: Validations                                    **
    ********************************************************************************************** */
 
-  initMetadata() {
+  invalidTranslation(data) {
+    Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION`, data);
+
+    return false;
+  }
+
+  getValidationCounts(translation, origin, type) {
+    const oCount = type === 'words' ? Toolbox.countWords(origin) : origin.length;
+    const tCount = type === 'words' ? Toolbox.countWords(translation) : translation.length;
+
+    const ratio = Database.getRatio(oCount, type);
+
+    return {
+      origin: oCount,
+      translation: Math.round(tCount * ratio),
+      ratio,
+    };
+  }
+
+  getValidationTrigger(path, uuid, type) {
+    this.triggers ||= {};
+    this.triggers[path] ||= {};
+    this.triggers[path][uuid] ||= {};
+
+    if (!this.triggers[path][uuid][type]) {
+      this.triggers[path][uuid][type] = 1.25;
+    } else if (this.triggers[path][uuid][type] === 1.25) {
+      this.triggers[path][uuid][type] = 1.5;
+    } else if (this.triggers[path][uuid][type] === 1.5) {
+      this.triggers[path][uuid][type] = 2;
+    } else if (this.triggers[path][uuid][type] === 2) {
+      this.triggers[path][uuid][type] = 3;
+    } else if (this.triggers[path][uuid][type] === 3) {
+      this.triggers[path][uuid][type] = 5;
+    } else if (this.triggers[path][uuid][type] === 5) {
+      this.triggers[path][uuid][type] = 10;
+    }
+
+    return this.triggers[path][uuid][type];
+  }
+
+  isValidTranslationType(translation, origin, file, uuid, type) {
+    const trigger = this.getValidationTrigger(file, uuid, type);
+
+    const counts = this.getValidationCounts(translation, origin, type);
+
+    if (counts.translation < counts.origin / trigger) {
+      return this.invalidTranslation({ from: `${type}_1`, origin, translation, counts, trigger });
+    }
+
+    if (counts.origin < counts.translation / trigger) {
+      return this.invalidTranslation({ from: `${type}_2`, origin, translation, counts, trigger });
+    }
+
+    Database.manageRatio(counts.origin, counts.translation, type);
+
+    return true;
+  }
+
+  isValidTranslation(translation, origin, file, uuid) {
+    if (translation.includes('\\"uuid-')) return false;
+
+    if (!this.isValidTranslationType(translation, origin, file, uuid, 'chars')) return false;
+
+    if (!this.isValidTranslationType(translation, origin, file, uuid, 'words')) return false;
+
+    return true;
+  }
+
+  /** **********************************************************************************************
+   **                                     Translate: Request                                      **
+   ********************************************************************************************** */
+
+  parseTranslationJSON(data, retry = false) {
+    try {
+      return retry
+        ? JSON.parse(jsonrepair(data.choices[0].message.content))
+        : JSON.parse(data.choices[0].message.content);
+    } catch (_error) {
+      return !retry ? this.parseTranslationJSON(data, true) : undefined;
+    }
+  }
+
+  parseTranslationRequest(data, query) {
+    const translations = this.parseTranslationJSON(data);
+
+    if (translations) {
+      Object.keys(translations).forEach((file) => {
+        if (!this.files[file] || !query.data[file]) return;
+
+        Object.entries(translations[file]).forEach(([uuid, translation]) => {
+          if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
+
+          if (!this.isValidTranslation(translation, query.data[file][uuid], file, uuid)) return;
+
+          Database.setTranslation(file, uuid, translation);
+
+          delete query.data?.[file]?.[uuid];
+        });
+
+        if (_.isEmpty(query.data[file])) delete query.data[file];
+      });
+
+      if (_.isEmpty(query.data)) query.finish = true;
+
+      Logger.info(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+    } else {
+      Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+    }
+  }
+
+  getTranslationParams(query) {
+    return {
+      model: this.params.model,
+      messages: [
+        {
+          role: 'user',
+          content: getContext({
+            source: this.params.source,
+            destination: this.params.destination,
+            book_title: this.epub.metadata.title,
+            book_author: this.epub.metadata.creator,
+            content: query.data,
+          }),
+        },
+      ],
+    };
+  }
+
+  sendTranslationRequest(query = this.getQuery()) {
+    if (!query) return;
+
+    query.waiting = true;
+
+    OpenAI.createChatCompletion(this.getTranslationParams(query))
+      .then((response) => this.parseTranslationRequest(response.data, query))
+      .catch((err) =>
+        Logger.error(
+          `${this.getInfos()} - SEND_TRANSLATION_REQUEST ${query.id}`,
+          err.response?.data || err
+        )
+      )
+      .finally(() => {
+        query.waiting = false;
+      });
+
+    Logger.info(`${this.getInfos()} - SEND_TRANSLATION_REQUEST ${query.id}`);
+  }
+
+  /** **********************************************************************************************
+   **                                          Translate                                          **
+   ********************************************************************************************** */
+
+  onTranslateInterval() {
+    this.sendTranslationRequest();
+
+    if (!this.hasFinishTranslation()) return;
+
+    this.emit('translated');
+
+    this.stopTranslateInterval();
+  }
+
+  stopTranslateInterval() {
+    clearInterval(this.timers.queries.id);
+
+    this.timers.queries.id = null;
+  }
+
+  startTranslateInterval() {
+    this.stopTranslateInterval();
+
+    this.timers.queries.id = setInterval(() => {
+      this.onTranslateInterval();
+    }, this.timers.queries.interval);
+
+    Logger.info(`${this.getInfos()} - START_TRANSLATE_INTERVAL`);
+  }
+
+  translate() {
+    this.startTranslateInterval();
+  }
+
+  /** **********************************************************************************************
+   **                                       Parse: Queries                                        **
+   ********************************************************************************************** */
+
+  parseQueries() {
+    let id = 0;
+
+    this.queries ||= [];
+
+    Object.keys(this.files).forEach((path) => {
+      Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
+        if (Database.hasTranslation(path, uuid)) return;
+
+        if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
+
+        this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
+
+        this.queries[id].data[path] ||= {};
+        this.queries[id].data[path][uuid] = text;
+
+        if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
+      });
+    });
+  }
+
+  /** **********************************************************************************************
+   **                                         Parse: HTML                                         **
+   ********************************************************************************************** */
+
+  manageUUID(path) {
+    this.files[path].elements += 1;
+
+    return `uuid-${this.files[path].elements}`;
+  }
+
+  manageText(path, uuid) {
+    if (Toolbox.hasText(this.files[path].tokens[uuid])) return;
+
+    delete this.files[path].tokens[uuid];
+  }
+
+  manageTag(html, index) {
+    if (html.slice(index, index + 4) === '<pre') {
+      return html.indexOf('</pre>', index);
+    }
+
+    if (html.slice(index, index + 5) === '<code') {
+      return html.indexOf('</code>', index);
+    }
+
+    if (html.slice(index, index + 6) === '<style') {
+      return html.indexOf('</style>', index);
+    }
+
+    return index;
+  }
+
+  parseHTML(path) {
+    this.files[path] = { path, tokens: {}, elements: 0 };
+
+    const html = this.readHTML(path, true);
+
+    for (let index = 0; index < html.length; index += 1) {
+      index = this.manageTag(html, index);
+
+      if (html[index] === '>') {
+        const uuid = this.manageUUID(path);
+
+        while (html[index + 1] && html[index + 1] !== '<') {
+          index += 1;
+
+          this.files[path].tokens[uuid] ||= '';
+          this.files[path].tokens[uuid] += html[index];
+        }
+
+        this.manageText(path, uuid);
+      }
+    }
+  }
+
+  /** **********************************************************************************************
+   **                                            Parse                                            **
+   ********************************************************************************************** */
+
+  parse() {
+    this.files = {};
+
+    this.file.paths.forEach((path) => {
+      if (!this.isHTML(path)) return;
+
+      this.parseHTML(path);
+    });
+
+    this.parseQueries();
+
+    this.emit('parsed');
+  }
+
+  /** **********************************************************************************************
+   **                                        Init: Prompt                                         **
+   ********************************************************************************************** */
+
+  promptCover() {
+    const cover = this.getCover();
+
+    if (cover) return this.setCover(cover);
+
+    return inquirer
+      .prompt([
+        {
+          type: 'list',
+          name: 'cover',
+          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir une cover:`,
+          choices: _.filter(this.epub.manifest, (el) => el['media-type'].includes('image')).map(
+            (image) => ({
+              name: image.href,
+              value: { id: image.id, href: image.href },
+            })
+          ),
+        },
+      ])
+      .then((answers) => this.setCover(answers.cover));
+  }
+
+  promptMetadata() {
     return new Promise((resolve) => {
       prompt.get(
         [
@@ -864,7 +591,6 @@ export default class EpubInterface extends EventEmitter {
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
           this.metadata.series_volume = result.series_volume;
-          this.epub.metadata.cover ||= 'cover';
 
           Logger.info(`${this.getInfos()} - INIT_METADATA`, this.metadata);
 
@@ -874,25 +600,50 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  initEpub() {
-    const rootPath = this.getRootPath();
+  /** **********************************************************************************************
+   **                                            Init                                             **
+   ********************************************************************************************** */
 
-    if (fs.existsSync(rootPath)) {
-      fs.rmSync(rootPath, { recursive: true, force: true });
+  initDatabase() {
+    Database.setHash(this.file.hash);
+    Database.setUser(this.params.user);
+    Database.setSource(this.params.source);
+    Database.setDestination(this.params.destination);
+
+    Database.readRatios();
+    Database.readTranslations();
+  }
+
+  initEpub() {
+    if (fs.existsSync(this.file.folder)) {
+      fs.rmSync(this.file.folder, { recursive: true, force: true });
     }
 
-    this.epub.zip.admZip.extractAllTo(rootPath, true);
+    this.epub.zip.admZip.extractAllTo(this.file.folder, true);
+  }
+
+  initPaths(dirpath = this.file.folder) {
+    this.file.paths ||= [];
+
+    fs.readdirSync(dirpath).forEach((filepath) => {
+      const fullpath = `${dirpath}/${filepath}`;
+
+      return fs.statSync(fullpath).isDirectory()
+        ? this.initPaths(fullpath)
+        : this.file.paths.push(fullpath);
+    });
   }
 
   init() {
-    this.epub = new EPUB(this.path);
+    this.epub = new EPUB(this.file.path);
 
     this.epub.on('end', async () => {
       this.initEpub();
+      this.initPaths();
+      this.initDatabase();
 
-      await this.initMetadata();
-
-      this.translations.files = Database.getTranslations(this.translations.destination);
+      await this.promptCover();
+      await this.promptMetadata();
 
       this.emit('initiated');
     });
