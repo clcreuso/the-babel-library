@@ -4,12 +4,16 @@ import EPUB from 'epub';
 import zip from 'archiver';
 import dotenv from 'dotenv';
 import prompt from 'prompt';
+import mime from 'mime-types';
+import iso6391 from 'iso-639-1';
 import inquirer from 'inquirer';
 
-import { EventEmitter } from 'events';
 import { jsonrepair } from 'jsonrepair';
-import { Configuration, OpenAIApi } from 'openai';
+import { EventEmitter } from 'events';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
+import { createCanvas, loadImage } from 'canvas';
+import { Configuration, OpenAIApi } from 'openai';
+
 import { detectLanguageConsolidated } from '../modules/Language.js';
 
 import Database from '../Database.js';
@@ -31,8 +35,6 @@ export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
 
-    this.setFile(params.path);
-
     this.params = {
       user: params.user || 'Toto',
       source: params.source || 'English',
@@ -45,6 +47,8 @@ export default class EpubInterface extends EventEmitter {
     this.timers = {
       queries: { id: null, interval: 500 },
     };
+
+    this.setFile(params.path);
   }
 
   /** **********************************************************************************************
@@ -52,17 +56,23 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   getInfos() {
-    return `EPUB (${this.getFilename()})`;
+    return `EPUB (${this.getEpubName()})`;
   }
 
   getQuery() {
     return _.find(this.queries, (query) => !query.finish && !query.waiting);
   }
 
+  getIsoCode(language) {
+    const code = iso6391.getCode(language);
+
+    return code ? code.toLowerCase() : null;
+  }
+
   getStatus() {
-    return `EPUB (${this.getFilename()}) - STATUS ${
-      _.filter(this.queries, (query) => query.finish).length
-    }/${this.queries.length}`;
+    return `${this.getInfos()} - STATUS ${_.filter(this.queries, (query) => query.finish).length}/${
+      this.queries.length
+    }`;
   }
 
   getCover() {
@@ -77,7 +87,7 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  getFilename() {
+  getEpubName() {
     const iso = Toolbox.getIsoCode(this.params.destination);
 
     const { title, subtitle, creator } = this.metadata;
@@ -87,6 +97,10 @@ export default class EpubInterface extends EventEmitter {
     if (title && creator) return `${title} | ${creator} (${iso})`;
 
     return `${title} (${iso})`;
+  }
+
+  getEpubPath() {
+    return `./library/${this.getEpubName()}.epub`;
   }
 
   /** **********************************************************************************************
@@ -199,6 +213,137 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
+   **                                         Write: OPF                                          **
+   ********************************************************************************************** */
+
+  getMetadataTitle() {
+    const title = this.metadata.title || this.epub.metadata.title;
+
+    return title
+      ? `<dc:title id="t1">${title}</dc:title>
+    <meta property="title-type" refines="#t1">main</meta>
+    <meta property="display-seq" refines="#t1">1</meta>`
+      : ``;
+  }
+
+  getMetadataSubtitle() {
+    const { subtitle } = this.metadata;
+
+    return subtitle
+      ? `<dc:title id="t2">${subtitle}</dc:title>
+    <meta property="title-type" refines="#t2">subtitle</meta>
+    <meta property="display-seq" refines="#t2">1</meta>`
+      : ``;
+  }
+
+  getMetadataCreator() {
+    const creator = this.metadata.creator || this.epub.metadata.creator;
+
+    return creator ? `<dc:creator>${creator}</dc:creator>` : ``;
+  }
+
+  getMetadataDate() {
+    const { date } = this.epub.metadata;
+
+    return date ? `<dc:date>${date}</dc:date>` : ``;
+  }
+
+  getMetadataPublisher() {
+    const { publisher } = this.epub.metadata || 'The Babel Library';
+
+    return publisher ? `<dc:publisher>${publisher}</dc:publisher>` : ``;
+  }
+
+  getMetadataLanguage() {
+    const iso = this.getIsoCode(this.params.destination);
+
+    return iso ? `<dc:language>${iso}</dc:language>` : ``;
+  }
+
+  getMetadataSerie() {
+    const { series_name } = this.metadata;
+
+    return series_name ? `<meta name="calibre:series" content="${series_name}"/>` : ``;
+  }
+
+  getMetadataSeriesIndex() {
+    const { series_volume } = this.metadata;
+
+    return series_volume ? `<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
+  }
+
+  getMetadataCover() {
+    return this.metadata.cover_id ? `<meta name="cover" content="${this.metadata.cover_id}"/>` : ``;
+  }
+
+  getMetadata() {
+    return [
+      this.getMetadataTitle(),
+      this.getMetadataSubtitle(),
+      this.getMetadataCreator(),
+      this.getMetadataDate(),
+      this.getMetadataPublisher(),
+      this.getMetadataLanguage(),
+      this.getMetadataSerie(),
+      this.getMetadataSeriesIndex(),
+      this.getMetadataCover(),
+    ].join('');
+  }
+
+  writeOPF(path) {
+    let content = this.readFile(path);
+
+    content = content.replace(
+      /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/,
+      `$1${this.getMetadata()}$3`
+    );
+
+    content = content.replace(/&(?!amp;)/g, '&amp;');
+
+    console.log(content);
+
+    this.writeFile(path, content);
+  }
+
+  /** **********************************************************************************************
+   **                                        Write: Cover                                         **
+   ********************************************************************************************** */
+
+  async writeCover(path) {
+    const image = await loadImage(path);
+
+    const canvas = createCanvas(800, 1280);
+    const context = canvas.getContext('2d');
+
+    context.drawImage(image, 0, 0, 800, 1280);
+
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(0, 90);
+    context.lineTo(275, 90);
+    context.lineTo(350, 0);
+    context.closePath();
+
+    context.lineWidth = 8;
+    context.strokeStyle = '#a20000';
+    context.stroke();
+
+    context.fillStyle = '#fff9b8';
+    context.fill();
+
+    context.fillStyle = '#16180f';
+    context.textAlign = 'center';
+    context.font = '34px "Times New Roman"';
+    context.fillText('The Babel Library', 160, 45);
+    context.font = '20px "Times New Roman"';
+    context.fillText(`Translated from "${this.params.source}"`, 142, 70);
+
+    const buffer = canvas.toBuffer(mime.lookup(path));
+
+    fs.writeFileSync(path, buffer);
+  }
+
+  /** **********************************************************************************************
    **                                            Write                                            **
    ********************************************************************************************** */
 
@@ -223,9 +368,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   writeEPUB() {
-    const destPath = `./library/${this.getFilename()}.epub`;
-
-    const output = fs.createWriteStream(destPath);
+    const output = fs.createWriteStream(this.getEpubPath());
     const archive = zip('zip', { store: false });
 
     archive.on('error', (archiveErr) => {
@@ -235,16 +378,14 @@ export default class EpubInterface extends EventEmitter {
     archive.pipe(output);
 
     output.on('close', () => {
-      Logger.info(`${this.getInfos()} - WRITE_EPUB "${destPath}"`);
+      Logger.info(`${this.getInfos()} - WRITE_EPUB "${this.getEpubPath()}"`);
 
       this.emit('writed');
     });
 
-    this.file.paths.forEach((file) => {
-      const content = fs.readFileSync(file);
-
-      archive.append(content, {
-        name: file.replace(`${this.file.folder}/`, ''),
+    this.file.paths.forEach((path) => {
+      archive.append(fs.readFileSync(path), {
+        name: path.replace(`${this.file.folder}/`, ''),
       });
     });
 
@@ -577,9 +718,17 @@ export default class EpubInterface extends EventEmitter {
     this.files = {};
 
     this.file.paths.forEach((path) => {
-      if (!this.isHTML(path)) return;
+      if (path.endsWith('.opf')) {
+        this.writeOPF(path);
+      }
 
-      this.parseHTML(path);
+      if (path.endsWith(this.metadata.cover_path)) {
+        this.writeCover(path);
+      }
+
+      if (this.isHTML(path)) {
+        this.parseHTML(path);
+      }
     });
 
     this.parseQueries();
