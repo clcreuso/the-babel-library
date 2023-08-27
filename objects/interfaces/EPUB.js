@@ -300,8 +300,6 @@ export default class EpubInterface extends EventEmitter {
 
     content = content.replace(/&(?!amp;)/g, '&amp;');
 
-    console.log(content);
-
     this.writeFile(path, content);
   }
 
