@@ -14,7 +14,7 @@ import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { createCanvas, loadImage } from 'canvas';
 import { Configuration, OpenAIApi } from 'openai';
 
-import { detectLanguageConsolidated } from '../modules/Language.js';
+import detectLanguage from '../modules/Language.js';
 
 import Database from '../Database.js';
 
@@ -460,8 +460,8 @@ export default class EpubInterface extends EventEmitter {
     return this.triggers[path][uuid][type];
   }
 
-  isValidTranslationLanguage(text, file, uuid) {
-    const textLanguage = detectLanguageConsolidated(text);
+  async isValidTranslationLanguage(text, file, uuid) {
+    const textLanguage = await detectLanguage(text);
 
     if (this.params.destination === textLanguage) return true;
 
@@ -490,12 +490,12 @@ export default class EpubInterface extends EventEmitter {
     return true;
   }
 
-  isValidTranslation(translation, origin, file, uuid) {
+  async isValidTranslation(translation, origin, file, uuid) {
     if (translation.includes('\\"uuid-')) return false;
 
     const vChars = this.isValidTranslationLength(translation, origin, file, uuid, 'chars');
     const vWords = this.isValidTranslationLength(translation, origin, file, uuid, 'words');
-    const vLang = this.isValidTranslationLanguage(translation, file, uuid);
+    const vLang = await this.isValidTranslationLanguage(translation, file, uuid);
 
     return vChars && vWords && vLang;
   }
@@ -526,10 +526,11 @@ export default class EpubInterface extends EventEmitter {
       Object.keys(translations).forEach((file) => {
         if (!this.files[file] || !query.data[file]) return;
 
-        Object.entries(translations[file]).forEach(([uuid, translation]) => {
+        Object.entries(translations[file]).forEach(async ([uuid, translation]) => {
           if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
 
-          if (!this.isValidTranslation(translation, query.data[file][uuid], file, uuid)) return;
+          if (!(await this.isValidTranslation(translation, query.data[file][uuid], file, uuid)))
+            return;
 
           Database.setTranslation(file, uuid, translation);
 
