@@ -81,7 +81,6 @@ OPEN_AI_ORG=***
 OPEN_AI_KEY=***
 ```
 
-
 <div align="center">
    <img src="/images/docs/env_file.png" width="50%">
 </div>
