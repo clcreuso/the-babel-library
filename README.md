@@ -111,8 +111,8 @@ The script will translate the EPUB file and create a translated version in the d
 
 <div align="center">
    <br>
-   
-  <a href="https://www.youtube.com/watch?v=KOSUYIr-Cfs"><img src="/images/docs/youtube_img.jpeg" alt="Tuto on Youtube"></a>
+
+  <a href="https://www.youtube.com/watch?v=KOSUYIr-Cfs"><img src="/images/docs/youtube_img.png" width="50%" alt="Tuto on Youtube"></a>
 </div>
 
 ## Notes
