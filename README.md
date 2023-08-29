@@ -79,6 +79,7 @@ In the root of your project, create a file named `.env`. Add the following lines
 ```env
 OPEN_AI_ORG=***
 OPEN_AI_KEY=***
+```
 
 
 <div align="center">
