@@ -26,16 +26,64 @@ Before running the script, make sure you have the following dependencies install
    npm install
 ```
 
-3. Create a `.env` file in the project directory.
+## Configuring `.env` for OpenAI
 
-4. Open the `.env` file and add the following configuration variables:
+This guide will help you set up a `.env` file to securely store your OpenAI API key and Org ID. Follow the steps below for a secure configuration.
 
-```
-   OPEN_AI_ORG=your_openai_organization_id
-   OPEN_AI_KEY=your_openai_api_key
-```
+### 1. Find the Organization ID
 
-   Replace `your_openai_organization_id` and `your_openai_api_key` with your actual OpenAI organization ID and API key. These credentials are required to access the OpenAI API for translation.
+To locate your Organization ID:
+
+- Navigate to your [OpenAI Dashboard](https://platform.openai.com/account/org-settings).
+- Look under the "Organization -> Settings" heading in the left column. Your Organization ID will be listed there.
+
+<div align="center">
+   <img src="/images/docs/org_id.png" width="50%">
+</div>
+
+### 2. Add a Payment Method
+
+Before you can create an API key, you must have a valid payment method on file:
+
+- In the dashboard, click on "Organization -> Billing -> Payment methods" in the left column.
+- Follow the prompts to add a new payment method.
+  
+<div align="center">
+   <img src="/images/docs/payment_method.png" width="50%">
+</div>
+
+### 3. Create an API Key
+
+- On the dashboard, navigate to the "User -> API Keys" section.
+- Click on "Create new key".
+- Give your key a recognizable name and select the appropriate scope.
+   
+<div align="center">
+   <img src="/images/docs/create_key.png" width="50%">
+</div>
+
+
+### 4. Copy the API Key
+
+- Once the key is generated, click on the "copy" icon next to the key.
+- Keep this key safe. For security reasons, OpenAI will only display the full key once.
+
+<div align="center">
+   <img src="/images/docs/paste_key.png" width="50%">
+</div>
+
+### 5. Create the `.env` File and Copy Over the Org ID and API Key
+
+In the root of your project, create a file named `.env`. Add the following lines, replacing `***` with your actual information:
+
+```env
+OPEN_AI_ORG=***
+OPEN_AI_KEY=***
+
+
+<div align="center">
+   <img src="/images/docs/env_file.png" width="50%">
+</div>
 
 ## Usage
 
