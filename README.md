@@ -107,6 +107,10 @@ node script.js path/to/your/file.epub
 
 The script will translate the EPUB file and create a translated version in the destination language.
 
+## Video Usage
+
+[![IMAGE ALT TEXT](http://img.youtube.com/vi/YOUTUBE_VIDEO_ID_HERE/0.jpg)](http://www.youtube.com/watch?v=YOUTUBE_VIDEO_ID_HERE "Video Title")
+
 ## Notes
 
     - JSON parsing errors (API response) are not serious.
