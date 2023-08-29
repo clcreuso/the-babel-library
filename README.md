@@ -110,7 +110,7 @@ The script will translate the EPUB file and create a translated version in the d
 ## Video Usage
 
 <div align="center">
-  [![Tuto Youtube](https://i.ytimg.com/vi/KOSUYIr-Cfs/hqdefault.jpg?sqp=-oaymwEcCNACELwBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLDOKcek3vN0fG85R-lb44yNSQdFoA)](https://www.youtube.com/watch?v=KOSUYIr-Cfs "[TUTO] The Babel Library")
+  <iframe width="420" height="345" src="https://www.youtube.com/embed/tgbNymZ7vqY"></iframe>
 </div>
 
 
