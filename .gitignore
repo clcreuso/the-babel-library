@@ -2,7 +2,7 @@
 **/*.log
 **/*.log.*
 test*.js
-db/*
+db/*.db
 tmp/*
 library/**/*
 
