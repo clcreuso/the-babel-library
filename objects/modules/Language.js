@@ -1,6 +1,5 @@
 import _ from 'lodash';
 
-import cld from 'cld';
 import LangDetect from 'langdetect';
 import LanguageDetect from 'languagedetect';
 
@@ -25,34 +24,6 @@ const detectLanguageFranc = (text) => {
 
   return languagesMap[detected];
 };
-
-async function detectLanguageCLD(text) {
-  try {
-    const result = await cld.detect(text);
-
-    const language = result.languages[0];
-
-    if (!language) return undefined;
-
-    const languagesMap = {
-      en: 'English',
-      zh: 'Mandarin',
-      es: 'Spanish',
-      hi: 'Hindi',
-      fr: 'French',
-      de: 'German',
-      ja: 'Japanese',
-      ru: 'Russian',
-      pt: 'Portuguese',
-      ar: 'Arabic',
-      ms: 'Malay',
-    };
-
-    return languagesMap[language.code];
-  } catch (error) {
-    return undefined;
-  }
-}
 
 const detectLanguageLanguagedetect = (text) => {
   const lngDetector = new LanguageDetect();
@@ -113,7 +84,6 @@ const detectLanguage = async (text) => {
   results.push(detectLanguageFranc(text));
   results.push(detectLanguageLangDetect(text));
   results.push(detectLanguageLanguagedetect(text));
-  results.push(await detectLanguageCLD(text));
 
   if (_.isEmpty(results)) return undefined;
 

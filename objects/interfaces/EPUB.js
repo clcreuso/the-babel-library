@@ -137,9 +137,20 @@ export default class EpubInterface extends EventEmitter {
   }
 
   isUselessTag(tag) {
-    return ['b', 'i', 'em', 'strong', 'small', 'mark', 'del', 'ins', 'u', 's', 'span'].includes(
-      tag
-    );
+    return [
+      'b',
+      'i',
+      'em',
+      'sup',
+      'strong',
+      'small',
+      'mark',
+      'del',
+      'ins',
+      'u',
+      's',
+      'span',
+    ].includes(tag);
   }
 
   hasFullyQuery(data) {
@@ -162,13 +173,35 @@ export default class EpubInterface extends EventEmitter {
    **                                        Helpers: HTML                                        **
    ********************************************************************************************** */
 
+  removeSpecificATags(html) {
+    html = html.replace(/<a [^>]*\/>/g, '');
+    html = html.replace(/<a [^>]*>[0-9]+<\/a>/g, '');
+
+    return html;
+  }
+
+  replaceNestedTags(html) {
+    html = html.replace(/<(i><b|b><i)>/g, '<b>');
+    html = html.replace(/<\/(b><\/i|i><\/b)>/g, '</b>');
+
+    return html;
+  }
+
   replaceHtmlQuote(html) {
     return html.replace(/>([^<]+)</g, (match, content) => {
-      content = content.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, "'");
-      content = content.replace(/(^|\s)’|‘(\s|$)/g, "$1'$2");
-      content = content.replace(/(^|\s)‘|’(\s|$)/g, "$1'$2");
+      content = content.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, `"`);
+      content = content.replace(/(^|\s)’|‘(\s|$)/g, `$1"$2`);
+      content = content.replace(/(^|\s)‘|’(\s|$)/g, `$1"$2`);
 
       return `>${content}<`;
+    });
+  }
+
+  removeEmptyTags(html) {
+    return html.replace(/<(\w+)([^>]*)>\s*<\/\1>/g, (match) => {
+      Logger.debug(`${this.getInfos()} - REMOVE_EMPTY_TAGS`, match);
+
+      return '';
     });
   }
 
@@ -186,13 +219,13 @@ export default class EpubInterface extends EventEmitter {
 
       const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
 
-      if (!_.every(texts, (el) => Toolbox.hasText(el))) return match;
+      if (!texts || !_.every(texts, (el) => Toolbox.hasText(el))) return match;
 
-      // Logger.debug(`${this.getInfos()} - REPLACE_HTML_TAG`, {
-      //   match,
-      //   tag,
-      //   replace: texts.join(''),
-      // });
+      Logger.debug(`${this.getInfos()} - REPLACE_HTML_TAG`, {
+        match,
+        tag,
+        replace: texts.join(''),
+      });
 
       return type === 'prefix' ? `>${texts.join('')}` : `${texts.join('')}<`;
     });
@@ -203,6 +236,9 @@ export default class EpubInterface extends EventEmitter {
 
     html = this.removeXmlTags(html);
     html = this.replaceHtmlQuote(html);
+    html = this.replaceNestedTags(html);
+    html = this.removeSpecificATags(html);
+    html = this.removeEmptyTags(html);
 
     _.times(5, () => {
       html = this.removeHtmlTags(html, />[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>/g, 'prefix');
@@ -345,6 +381,14 @@ export default class EpubInterface extends EventEmitter {
    **                                            Write                                            **
    ********************************************************************************************** */
 
+  replaceTranslationQuote(translation) {
+    translation = translation.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, `"`);
+    translation = translation.replace(/(^|\s)’|‘(\s|$)/g, `$1"$2`);
+    translation = translation.replace(/(^|\s)‘|’(\s|$)/g, `$1"$2`);
+
+    return translation;
+  }
+
   translateFile(path, translations) {
     const origins = this.files[path].tokens;
 
@@ -352,6 +396,8 @@ export default class EpubInterface extends EventEmitter {
       if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return file;
 
       let translation = translations[uuid].replace(/&(?!amp;)/g, '&amp;');
+
+      translation = this.replaceTranslationQuote(translation);
 
       if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
         translation = ` ${translation}`;
@@ -390,11 +436,40 @@ export default class EpubInterface extends EventEmitter {
     archive.finalize();
   }
 
+  correctQuoteSpaces(text) {
+    let newText = '';
+    let quoteIndex = 0;
+
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === '"') {
+        if (quoteIndex % 2 === 1) {
+          newText = `${newText}${text[i]}`;
+
+          while (text[i + 1] && text[i + 1] === ' ') i += 1;
+        } else {
+          while (newText[newText.length - 1] && newText[newText.length - 1] === ' ') {
+            newText = newText.slice(0, -1);
+          }
+
+          newText = `${newText}${text[i]}`;
+        }
+
+        quoteIndex += 1;
+      } else {
+        newText = `${newText}${text[i]}`;
+      }
+    }
+
+    return newText;
+  }
+
   write() {
     Object.entries(Database.translations).forEach(([path, translations]) => {
       if (!path.startsWith(this.file.folder) || !this.files[path]) return;
 
-      const file = this.translateFile(path, translations);
+      let file = this.translateFile(path, translations);
+
+      file = this.correctQuoteSpaces(file);
 
       this.writeFile(path, file);
 
@@ -460,10 +535,28 @@ export default class EpubInterface extends EventEmitter {
     return this.triggers[path][uuid][type];
   }
 
+  isURL(str) {
+    if (!str) return false;
+
+    return str.startsWith('http');
+  }
+
+  isRomanNumber(str) {
+    if (!str) return false;
+
+    const regex = /^(M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3}))$/;
+
+    return regex.test(str);
+  }
+
   async isValidTranslationLanguage(text, file, uuid) {
+    if (this.isURL(text)) return true;
+
+    if (this.isRomanNumber(text)) return true;
+
     const textLanguage = await detectLanguage(text);
 
-    if (this.params.destination === textLanguage) return true;
+    if (!textLanguage || this.params.destination === textLanguage) return true;
 
     const trigger = this.getValidationTriggerLanguage(file, uuid, 'lang');
 
