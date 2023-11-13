@@ -175,7 +175,9 @@ export default class EpubInterface extends EventEmitter {
 
   removeSpecificATags(html) {
     html = html.replace(/<a [^>]*\/>/g, '');
+    html = html.replace(/<a [^>]*><\/a>/g, '');
     html = html.replace(/<a [^>]*>[0-9]+<\/a>/g, '');
+    html = html.replace(/<a [^>]*>([\s\S]+?)<\/a>/g, '$1');
 
     return html;
   }
@@ -217,7 +219,7 @@ export default class EpubInterface extends EventEmitter {
     return html.replace(regex, (match, tag) => {
       if (!this.isUselessTag(tag)) return match;
 
-      const texts = match.match(/(?<=>)(?!>)(.*?)(?=<)/g);
+      const texts = match.match(/(?<=>)(?!>)([\s\S]+?)(?=<)/g);
 
       if (!texts || !_.every(texts, (el) => Toolbox.hasText(el))) return match;
 
@@ -241,8 +243,8 @@ export default class EpubInterface extends EventEmitter {
     html = this.removeEmptyTags(html);
 
     _.times(5, () => {
-      html = this.removeHtmlTags(html, />[^<]*[a-z][^>]*<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>/g, 'prefix');
-      html = this.removeHtmlTags(html, /<(\w+)[^>]*>[a-zA-Z\s]+<\/\1>[^<]*[a-z][^>]*</g, 'suffix');
+      html = this.removeHtmlTags(html, />[^<]*[a-z][^>]*<(\w+)[^>]*>([\s\S]+?)<\/\1>/g, 'prefix');
+      html = this.removeHtmlTags(html, /<(\w+)[^>]*>([\s\S]+?)<\/\1>[^<]*[a-z][^>]*</g, 'suffix');
     });
 
     return html;
@@ -436,13 +438,13 @@ export default class EpubInterface extends EventEmitter {
     archive.finalize();
   }
 
-  correctQuoteSpaces(text) {
+  fixQuoteSpaces(text) {
     let newText = '';
     let quoteIndex = 0;
 
     for (let i = 0; i < text.length; i += 1) {
       if (text[i] === '"') {
-        if (quoteIndex % 2 === 1) {
+        if (quoteIndex % 2 === 0) {
           newText = `${newText}${text[i]}`;
 
           while (text[i + 1] && text[i + 1] === ' ') i += 1;
@@ -463,13 +465,21 @@ export default class EpubInterface extends EventEmitter {
     return newText;
   }
 
+  fixQuoteFile(file) {
+    return file.replace(/>[\w\s.,;:'"?!-]+</g, (match) => {
+      if (!match.includes('"')) return match;
+
+      return this.fixQuoteSpaces(match);
+    });
+  }
+
   write() {
     Object.entries(Database.translations).forEach(([path, translations]) => {
       if (!path.startsWith(this.file.folder) || !this.files[path]) return;
 
       let file = this.translateFile(path, translations);
 
-      file = this.correctQuoteSpaces(file);
+      file = this.fixQuoteFile(file);
 
       this.writeFile(path, file);
 
