@@ -200,7 +200,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   removeEmptyTags(html) {
-    return html.replace(/<(\w+)([^>]*)>\s*<\/\1>/g, (match) => {
+    return html.replace(/<(\w+)([^>\\/]*)>\s*<\/\1>/g, (match) => {
       Logger.debug(`${this.getInfos()} - REMOVE_EMPTY_TAGS`, match);
 
       return '';
