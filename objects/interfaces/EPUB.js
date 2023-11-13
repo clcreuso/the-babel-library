@@ -407,6 +407,9 @@ export default class EpubInterface extends EventEmitter {
 
       let translation = translations[uuid].replace(/&(?!amp;)/g, '&amp;');
 
+      translation = translations[uuid].replace(/</g, '&lt;');
+      translation = translations[uuid].replace(/>/g, '&gt;');
+
       translation = this.replaceTranslationQuote(translation);
 
       if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
