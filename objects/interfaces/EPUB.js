@@ -29,7 +29,7 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 500;
+const MAX_TOKENS = 1000;
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -39,7 +39,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-3.5-turbo-0613',
+      model: params.model || 'gpt-3.5-turbo-1106',
     };
 
     this.metadata = params.metadata || {};
@@ -405,12 +405,12 @@ export default class EpubInterface extends EventEmitter {
     return Object.keys(translations).reduce((file, uuid) => {
       if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return file;
 
-      let translation = translations[uuid].replace(/&(?!amp;)/g, '&amp;');
+      let translation = this.replaceTranslationQuote(translations[uuid]);
 
-      translation = translations[uuid].replace(/</g, '&lt;');
-      translation = translations[uuid].replace(/>/g, '&gt;');
+      translation = translation.replace(/&(?!amp;)/g, '&amp;');
 
-      translation = this.replaceTranslationQuote(translation);
+      translation = translation.replaceAll('>', '&gt;');
+      translation = translation.replaceAll('<', '&lt;');
 
       if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
         translation = ` ${translation}`;
@@ -634,31 +634,35 @@ export default class EpubInterface extends EventEmitter {
   }
 
   parseTranslationRequest(data, query) {
-    const translations = this.parseTranslationJSON(data);
+    try {
+      const translations = this.parseTranslationJSON(data);
 
-    if (translations) {
-      Object.keys(translations).forEach((file) => {
-        if (!this.files[file] || !query.data[file]) return;
+      if (translations) {
+        Object.keys(translations).forEach((file) => {
+          if (!this.files[file] || !query.data[file]) return;
 
-        Object.entries(translations[file]).forEach(async ([uuid, translation]) => {
-          if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
+          Object.entries(translations[file]).forEach(async ([uuid, translation]) => {
+            if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
 
-          if (!(await this.isValidTranslation(translation, query.data[file][uuid], file, uuid)))
-            return;
+            if (!(await this.isValidTranslation(translation, query.data[file][uuid], file, uuid)))
+              return;
 
-          Database.setTranslation(file, uuid, translation);
+            Database.setTranslation(file, uuid, translation);
 
-          delete query.data?.[file]?.[uuid];
+            delete query.data?.[file]?.[uuid];
+          });
+
+          if (_.isEmpty(query.data[file])) delete query.data[file];
         });
 
-        if (_.isEmpty(query.data[file])) delete query.data[file];
-      });
+        if (_.isEmpty(query.data)) query.finish = true;
 
-      if (_.isEmpty(query.data)) query.finish = true;
-
-      Logger.info(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
-    } else {
-      Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+        Logger.info(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+      } else {
+        Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+      }
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_JSON`, data.choices);
     }
   }
 
