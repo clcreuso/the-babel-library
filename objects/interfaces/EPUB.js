@@ -221,7 +221,7 @@ export default class EpubInterface extends EventEmitter {
 
       const texts = match.match(/(?<=>)(?!>)([\s\S]+?)(?=<)/g);
 
-      if (!texts || !_.every(texts, (el) => Toolbox.hasText(el))) return match;
+      if (!texts || _.some(texts, (el) => _.isEmpty(el))) return match;
 
       Logger.debug(`${this.getInfos()} - REPLACE_HTML_TAG`, {
         match,
@@ -243,8 +243,8 @@ export default class EpubInterface extends EventEmitter {
     html = this.removeEmptyTags(html);
 
     _.times(5, () => {
-      html = this.removeHtmlTags(html, />[^<]*[a-z][^>]*<(\w+)[^>]*>([\s\S]+?)<\/\1>/g, 'prefix');
-      html = this.removeHtmlTags(html, /<(\w+)[^>]*>([\s\S]+?)<\/\1>[^<]*[a-z][^>]*</g, 'suffix');
+      html = this.removeHtmlTags(html, />[^<]*[\S][^>]*<(\w+)[^>]*>([^<]+?)<\/\1>/g, 'prefix');
+      html = this.removeHtmlTags(html, /<(\w+)[^>]*>([^<]+?)<\/\1>[^<]*[\S][^>]*</g, 'suffix');
     });
 
     return html;
