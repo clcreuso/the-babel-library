@@ -207,6 +207,13 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
+  removeSpanTags(html) {
+    html = html.replace(/<\s*span[^>]*>/g, '');
+    html = html.replace(/<\s*\/\s*span\s*>/g, '');
+
+    return html;
+  }
+
   removeXmlTags(html) {
     return html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
       Logger.debug(`${this.getInfos()} - DELETE_XML_TAG`, match);
@@ -241,6 +248,7 @@ export default class EpubInterface extends EventEmitter {
     html = this.replaceNestedTags(html);
     html = this.removeSpecificATags(html);
     html = this.removeEmptyTags(html);
+    html = this.removeSpanTags(html);
 
     _.times(5, () => {
       html = this.removeHtmlTags(html, />[^<]*[\S][^>]*<(\w+)[^>]*>([^<]+?)<\/\1>/g, 'prefix');
