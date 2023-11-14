@@ -969,7 +969,7 @@ export default class EpubInterface extends EventEmitter {
     this.epub.on('error', async (error) => {
       Logger.fatal(`${this.getInfos()} - INIT - ERRROR`, error);
 
-      process.exit();
+      process.exit(-1);
     });
 
     this.epub.on('end', async () => {
