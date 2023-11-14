@@ -29,7 +29,22 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 1000;
+const MAX_TOKENS = 750;
+
+const USELESS_TAGS = [
+  'b',
+  'i',
+  'em',
+  'sup',
+  'strong',
+  'small',
+  'mark',
+  'del',
+  'ins',
+  'u',
+  's',
+  'span',
+];
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -200,11 +215,17 @@ export default class EpubInterface extends EventEmitter {
   }
 
   removeEmptyTags(html) {
-    return html.replace(/<(\w+)([^>\\/]*)>\s*<\/\1>/g, (match) => {
-      Logger.debug(`${this.getInfos()} - REMOVE_EMPTY_TAGS`, match);
+    USELESS_TAGS.forEach((tag) => {
+      const regex = new RegExp(`<${tag}([^>\\/]*)>\\s*<\\/${tag}>`, 'g');
 
-      return '';
+      html = html.replace(regex, (match) => {
+        Logger.debug(`${this.getInfos()} - REMOVE_EMPTY_TAGS`, match);
+
+        return '';
+      });
     });
+
+    return html;
   }
 
   removeSpanTags(html) {
@@ -797,6 +818,10 @@ export default class EpubInterface extends EventEmitter {
       return html.indexOf('</code>', index);
     }
 
+    if (html.slice(index, index + 5) === '<math') {
+      return html.indexOf('</math>', index);
+    }
+
     if (html.slice(index, index + 6) === '<style') {
       return html.indexOf('</style>', index);
     }
@@ -940,6 +965,12 @@ export default class EpubInterface extends EventEmitter {
 
   init() {
     this.epub = new EPUB(this.file.path);
+
+    this.epub.on('error', async (error) => {
+      Logger.fatal(`${this.getInfos()} - INIT - ERRROR`, error);
+
+      process.exit();
+    });
 
     this.epub.on('end', async () => {
       this.initEpub();
