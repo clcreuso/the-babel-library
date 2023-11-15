@@ -78,20 +78,38 @@ const detectLanguageLangDetect = (text) => {
   return undefined;
 };
 
-const detectFrenchAccent = (text) => {
+const detectLanguageFromPunctuation = (text) => {
+  const ponctuationFrancaise = /\s[?!]/g;
+  const ponctuationAnglaise = /[?!](?!\s)/g;
+
+  const occurrencesFrancaises = (text.match(ponctuationFrancaise) || []).length;
+  const occurrencesAnglaises = (text.match(ponctuationAnglaise) || []).length;
+
+  if (occurrencesFrancaises > occurrencesAnglaises) {
+    return 'French';
+  }
+
+  if (occurrencesAnglaises > occurrencesFrancaises) {
+    return 'English';
+  }
+
+  return undefined;
+};
+
+const detectLanguageFromAccent = (text) => {
   const regex = /[éèêàâôçÉÈÊÀÂÔÇ]/g;
 
-  return regex.test(text);
+  return regex.test(text) ? 'French' : undefined;
 };
 
 const detectLanguage = async (text) => {
   const results = [];
 
-  if (detectFrenchAccent(text)) return 'French';
-
   results.push(detectLanguageFranc(text));
   results.push(detectLanguageLangDetect(text));
   results.push(detectLanguageLanguagedetect(text));
+  results.push(detectLanguageFromPunctuation(text));
+  results.push(detectLanguageFromAccent(text));
 
   if (_.isEmpty(results)) return undefined;
 
