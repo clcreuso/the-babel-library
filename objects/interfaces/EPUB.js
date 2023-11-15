@@ -261,6 +261,71 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
+  getSplitIndex(text) {
+    let i = 0;
+    let words = 0;
+
+    while (text[i]) {
+      if (text[i] === ' ') words += 1;
+
+      if (words > 200) {
+        for (let j = 0; j < 100; j += 1) {
+          if (!text[i - j] || !text[i + j]) break;
+
+          if (text[i - j] === '.') {
+            i -= j;
+
+            break;
+          }
+
+          if (text[i + j] === '.') {
+            i += j;
+            break;
+          }
+        }
+
+        while (text[i] && !/[A-Z\\.]/.test(text[i])) {
+          i += 1;
+        }
+
+        if (text[i] === '.') i += 1;
+
+        break;
+      }
+
+      i += 1;
+    }
+
+    return { i, words };
+  }
+
+  splitHtmlText(html, regex) {
+    return html.replace(regex, (match, tag) => {
+      if (match.length < 1000) return match;
+
+      const { i, words } = this.getSplitIndex(match);
+
+      if (!match[i] || !match[i + 1]) return match;
+
+      if (match[i] === '<' || match[i + 1] === '<') return match;
+
+      if (words < 200) return match;
+
+      const openTag = match.match(/<([^\\/][^>]*)>/)[0];
+      const closeTag = match.match(/<\/([^ >]+)>/)[0];
+
+      Logger.debug(`${this.getInfos()} - SPLIT_HTML_TEXT`, {
+        i,
+        match,
+        words,
+        tag,
+        result: `${match.slice(0, i)}${closeTag}${openTag}${match.slice(i)}`,
+      });
+
+      return `${match.slice(0, i)}${closeTag}${openTag}${match.slice(i)}`;
+    });
+  }
+
   readHTML(path) {
     let html = this.readFile(path);
 
@@ -274,6 +339,10 @@ export default class EpubInterface extends EventEmitter {
     _.times(5, () => {
       html = this.removeHtmlTags(html, />[^<]*[\S][^>]*<(\w+)[^>]*>([^<]+?)<\/\1>/g, 'prefix');
       html = this.removeHtmlTags(html, /<(\w+)[^>]*>([^<]+?)<\/\1>[^<]*[\S][^>]*</g, 'suffix');
+    });
+
+    _.times(20, () => {
+      html = this.splitHtmlText(html, /<(\w+)[^>]*>([^<]+)<\/\1>/g);
     });
 
     return html;
@@ -752,7 +821,7 @@ export default class EpubInterface extends EventEmitter {
     this.timers.queries.id = setInterval(() => {
       index += 1;
 
-      if (index % 100) {
+      if (index % 500) {
         this.onTranslateInterval();
       } else {
         this.parseQueries();
