@@ -78,8 +78,16 @@ const detectLanguageLangDetect = (text) => {
   return undefined;
 };
 
+const detectFrenchAccent = (text) => {
+  const regex = /[éèêàâôçÉÈÊÀÂÔÇ]/g;
+
+  return regex.test(text);
+};
+
 const detectLanguage = async (text) => {
   const results = [];
+
+  if (detectFrenchAccent(text)) return 'French';
 
   results.push(detectLanguageFranc(text));
   results.push(detectLanguageLangDetect(text));
