@@ -1,8 +1,11 @@
+/* eslint-disable max-len */
+
 export default (data) =>
   [
     `Informations générales :`,
     `- Objectif : Traduire le contenu d'un livre écrit en ${data.source} en ${data.destination}`,
     `Contraintes de traduction :`,
+    `- Ta REPONSE est uniquement le JSON traduis le premier charactere doit etre '{' et le dernier '}'`,
     `- Le contenu est présenté sous forme de JSON`,
     `- Seules les valeurs du JSON doivent être traduites`,
     `- Les clés JSON, y compris le chemin de fichier et l'UUID, ne doivent pas être touchées`,

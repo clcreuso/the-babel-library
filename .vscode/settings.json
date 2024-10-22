@@ -6,8 +6,8 @@
     "editor.tabSize": 2,
     "editor.formatOnSave": false,
     "editor.codeActionsOnSave": {
-      "source.fixAll": true
-    },
+      "source.fixAll": "explicit"
+    }
   },
   "[json]": {
     "editor.tabSize": 2

@@ -3,6 +3,7 @@ export default (data) =>
     `General Information:`,
     `- Objective: Translate the content of a book written in ${data.source} to ${data.destination}`,
     `Translation Constraints:`,
+    `- You ANSWER only translated JSON you answer first char is '{' last char '}'`,
     `- The content is presented in JSON format`,
     `- Only the values of the JSON should be translated`,
     `- JSON keys, including file paths and UUIDs, should not be altered`,

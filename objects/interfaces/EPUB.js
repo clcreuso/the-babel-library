@@ -54,7 +54,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-3.5-turbo-1106',
+      model: params.model || 'gpt-4o-mini-2024-07-18',
     };
 
     this.metadata = params.metadata || {};
@@ -148,7 +148,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   isHTML(path) {
-    return path.endsWith('.htm') || path.endsWith('.html') || path.endsWith('.xhtml');
+    return path.includes('.htm') || path.includes('.html') || path.includes('.xhtml');
   }
 
   isUselessTag(tag) {
@@ -197,13 +197,6 @@ export default class EpubInterface extends EventEmitter {
     return html;
   }
 
-  replaceNestedTags(html) {
-    html = html.replace(/<(i><b|b><i)>/g, '<b>');
-    html = html.replace(/<\/(b><\/i|i><\/b)>/g, '</b>');
-
-    return html;
-  }
-
   replaceHtmlQuote(html) {
     return html.replace(/>([^<]+)</g, (match, content) => {
       content = content.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, `"`);
@@ -214,23 +207,23 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  removeEmptyTags(html) {
+  removeUselessTags(html) {
     USELESS_TAGS.forEach((tag) => {
-      const regex = new RegExp(`<${tag}([^>\\/]*)>\\s*<\\/${tag}>`, 'g');
+      const openingTagRegex = new RegExp(`<\\s*${tag}(\\s[^>]*)?>`, 'g');
+      const closingTagRegex = new RegExp(`<\\s*\\/\\s*${tag}\\s*>`, 'g');
 
-      html = html.replace(regex, (match) => {
-        Logger.debug(`${this.getInfos()} - REMOVE_EMPTY_TAGS`, match);
+      html = html.replace(openingTagRegex, (match) => {
+        Logger.debug(`${this.getInfos()} - REMOVE_USELESS_OPEN`, match);
+
+        return '';
+      });
+
+      html = html.replace(closingTagRegex, (match) => {
+        Logger.debug(`${this.getInfos()} - REMOVE_USELESS_CLOSE`, match);
 
         return '';
       });
     });
-
-    return html;
-  }
-
-  removeSpanTags(html) {
-    html = html.replace(/<\s*span[^>]*>/g, '');
-    html = html.replace(/<\s*\/\s*span\s*>/g, '');
 
     return html;
   }
@@ -240,24 +233,6 @@ export default class EpubInterface extends EventEmitter {
       Logger.debug(`${this.getInfos()} - DELETE_XML_TAG`, match);
 
       return '';
-    });
-  }
-
-  removeHtmlTags(html, regex, type) {
-    return html.replace(regex, (match, tag) => {
-      if (!this.isUselessTag(tag)) return match;
-
-      const texts = match.match(/(?<=>)(?!>)([\s\S]+?)(?=<)/g);
-
-      if (!texts || _.some(texts, (el) => _.isEmpty(el))) return match;
-
-      Logger.debug(`${this.getInfos()} - REPLACE_HTML_TAG`, {
-        match,
-        tag,
-        replace: texts.join(''),
-      });
-
-      return type === 'prefix' ? `>${texts.join('')}` : `${texts.join('')}<`;
     });
   }
 
@@ -303,6 +278,8 @@ export default class EpubInterface extends EventEmitter {
     return html.replace(regex, (match, tag) => {
       if (match.length < 1000) return match;
 
+      if (Toolbox.countWords(match) < 250) return match;
+
       const { i, words } = this.getSplitIndex(match);
 
       if (!match[i] || !match[i + 1]) return match;
@@ -331,15 +308,8 @@ export default class EpubInterface extends EventEmitter {
 
     html = this.removeXmlTags(html);
     html = this.replaceHtmlQuote(html);
-    html = this.replaceNestedTags(html);
     html = this.removeSpecificATags(html);
-    html = this.removeEmptyTags(html);
-    html = this.removeSpanTags(html);
-
-    _.times(5, () => {
-      html = this.removeHtmlTags(html, />[^<]*[\S][^>]*<(\w+)[^>]*>([^<]+?)<\/\1>/g, 'prefix');
-      html = this.removeHtmlTags(html, /<(\w+)[^>]*>([^<]+?)<\/\1>[^<]*[\S][^>]*</g, 'suffix');
-    });
+    html = this.removeUselessTags(html);
 
     _.times(20, () => {
       html = this.splitHtmlText(html, /<(\w+)[^>]*>([^<]+)<\/\1>/g);
@@ -630,17 +600,17 @@ export default class EpubInterface extends EventEmitter {
     this.triggers[path][uuid] ||= {};
 
     if (!this.triggers[path][uuid][type]) {
-      this.triggers[path][uuid][type] = 1.25;
-    } else if (this.triggers[path][uuid][type] === 1.25) {
       this.triggers[path][uuid][type] = 1.5;
-    } else if (this.triggers[path][uuid][type] === 1.5) {
+    } else if (this.triggers[path][uuid][type] === 1.25) {
       this.triggers[path][uuid][type] = 2;
-    } else if (this.triggers[path][uuid][type] === 2) {
+    } else if (this.triggers[path][uuid][type] === 1.5) {
       this.triggers[path][uuid][type] = 3;
-    } else if (this.triggers[path][uuid][type] === 3) {
+    } else if (this.triggers[path][uuid][type] === 2) {
       this.triggers[path][uuid][type] = 5;
-    } else if (this.triggers[path][uuid][type] === 5) {
+    } else if (this.triggers[path][uuid][type] === 3) {
       this.triggers[path][uuid][type] = 10;
+    } else if (this.triggers[path][uuid][type] === 5) {
+      this.triggers[path][uuid][type] = 20;
     }
 
     return this.triggers[path][uuid][type];
@@ -664,6 +634,8 @@ export default class EpubInterface extends EventEmitter {
     if (this.isURL(text)) return true;
 
     if (this.isRomanNumber(text)) return true;
+
+    if (Toolbox.countWords(text) <= 5) return true;
 
     const textLanguage = await detectLanguage(text);
 
@@ -696,6 +668,8 @@ export default class EpubInterface extends EventEmitter {
 
   async isValidTranslation(translation, origin, file, uuid) {
     if (translation.includes('\\"uuid-')) return false;
+
+    if (Toolbox.countWords(origin) <= 5 && Toolbox.countWords(translation) <= 5) return true;
 
     const vChars = this.isValidTranslationLength(translation, origin, file, uuid, 'chars');
     const vWords = this.isValidTranslationLength(translation, origin, file, uuid, 'words');
