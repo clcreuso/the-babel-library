@@ -1,3 +1,5 @@
+/* eslint-disable no-restricted-syntax */
+
 import _ from 'lodash';
 import fs from 'fs';
 import EPUB from 'epub';
@@ -14,7 +16,7 @@ import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { createCanvas, loadImage } from 'canvas';
 import { Configuration, OpenAIApi } from 'openai';
 
-import detectLanguage from '../modules/Language.js';
+// import detectLanguage from '../modules/Language.js';
 
 import Database from '../Database.js';
 
@@ -148,7 +150,12 @@ export default class EpubInterface extends EventEmitter {
   }
 
   isHTML(path) {
-    return path.includes('.htm') || path.includes('.html') || path.includes('.xhtml');
+    return (
+      path.includes('.htm') ||
+      path.includes('.html') ||
+      path.includes('.xhtml') ||
+      path.includes('.xml')
+    );
   }
 
   isUselessTag(tag) {
@@ -228,6 +235,26 @@ export default class EpubInterface extends EventEmitter {
     return html;
   }
 
+  // mergePara(html) {
+  //   return html.replace(
+  //     /(<p[^>]*>)(.*?)(<\/p>\s*<p[^>]*>)(.*?)(<\/p>)/gs,
+  //     (match, openingTag, firstContent, middleTag, secondContent, closingTag) => {
+  //       const result = `${openingTag}${`${firstContent} ${secondContent}`.trim()}${closingTag}`;
+
+  //       if (result.length <= 500) {
+  //         Logger.debug(`${this.getInfos()} - MERGE_PARA`, {
+  //           match,
+  //           result,
+  //         });
+
+  //         return result;
+  //       }
+
+  //       return match;
+  //     }
+  //   );
+  // }
+
   removeXmlTags(html) {
     return html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
       Logger.debug(`${this.getInfos()} - DELETE_XML_TAG`, match);
@@ -276,9 +303,9 @@ export default class EpubInterface extends EventEmitter {
 
   splitHtmlText(html, regex) {
     return html.replace(regex, (match, tag) => {
-      if (match.length < 1000) return match;
+      if (match.length < 2000) return match;
 
-      if (Toolbox.countWords(match) < 250) return match;
+      if (Toolbox.countWords(match) < 450) return match;
 
       const { i, words } = this.getSplitIndex(match);
 
@@ -286,7 +313,7 @@ export default class EpubInterface extends EventEmitter {
 
       if (match[i] === '<' || match[i + 1] === '<') return match;
 
-      if (words < 200) return match;
+      if (words < 400) return match;
 
       const openTag = match.match(/<([^\\/][^>]*)>/)[0];
       const closeTag = match.match(/<\/([^ >]+)>/)[0];
@@ -310,6 +337,10 @@ export default class EpubInterface extends EventEmitter {
     html = this.replaceHtmlQuote(html);
     html = this.removeSpecificATags(html);
     html = this.removeUselessTags(html);
+
+    // _.times(200, () => {
+    //   html = this.mergePara(html);
+    // });
 
     _.times(20, () => {
       html = this.splitHtmlText(html, /<(\w+)[^>]*>([^<]+)<\/\1>/g);
@@ -561,124 +592,6 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                   Translate: Validations                                    **
-   ********************************************************************************************** */
-
-  invalidTranslation(data) {
-    Logger.warn(`${this.getInfos()} - INVALID_TRANSLATION`, data);
-
-    return false;
-  }
-
-  getValidationCounts(translation, origin, type) {
-    const oCount = type === 'words' ? Toolbox.countWords(origin) : origin.length;
-    const tCount = type === 'words' ? Toolbox.countWords(translation) : translation.length;
-
-    const ratio = Database.getRatio(oCount, type);
-
-    return {
-      origin: oCount,
-      translation: Math.round(tCount * ratio),
-      ratio,
-    };
-  }
-
-  getValidationTriggerLanguage(path, uuid, type) {
-    this.triggers ||= {};
-    this.triggers[path] ||= {};
-    this.triggers[path][uuid] ||= {};
-
-    this.triggers[path][uuid][type] ||= 0;
-    this.triggers[path][uuid][type] += 1;
-
-    return this.triggers[path][uuid][type];
-  }
-
-  getValidationTriggerLength(path, uuid, type) {
-    this.triggers ||= {};
-    this.triggers[path] ||= {};
-    this.triggers[path][uuid] ||= {};
-
-    if (!this.triggers[path][uuid][type]) {
-      this.triggers[path][uuid][type] = 1.5;
-    } else if (this.triggers[path][uuid][type] === 1.25) {
-      this.triggers[path][uuid][type] = 2;
-    } else if (this.triggers[path][uuid][type] === 1.5) {
-      this.triggers[path][uuid][type] = 3;
-    } else if (this.triggers[path][uuid][type] === 2) {
-      this.triggers[path][uuid][type] = 5;
-    } else if (this.triggers[path][uuid][type] === 3) {
-      this.triggers[path][uuid][type] = 10;
-    } else if (this.triggers[path][uuid][type] === 5) {
-      this.triggers[path][uuid][type] = 20;
-    }
-
-    return this.triggers[path][uuid][type];
-  }
-
-  isURL(str) {
-    if (!str) return false;
-
-    return str.startsWith('http');
-  }
-
-  isRomanNumber(str) {
-    if (!str) return false;
-
-    const regex = /^(M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3}))$/;
-
-    return regex.test(str);
-  }
-
-  async isValidTranslationLanguage(text, file, uuid) {
-    if (this.isURL(text)) return true;
-
-    if (this.isRomanNumber(text)) return true;
-
-    if (Toolbox.countWords(text) <= 5) return true;
-
-    const textLanguage = await detectLanguage(text);
-
-    if (!textLanguage || this.params.destination === textLanguage) return true;
-
-    const trigger = this.getValidationTriggerLanguage(file, uuid, 'lang');
-
-    return trigger < 5
-      ? this.invalidTranslation({ from: 'lang', text, textLanguage, trigger })
-      : true;
-  }
-
-  isValidTranslationLength(translation, origin, file, uuid, type) {
-    const trigger = this.getValidationTriggerLength(file, uuid, type);
-
-    const counts = this.getValidationCounts(translation, origin, type);
-
-    if (counts.translation < counts.origin / trigger) {
-      return this.invalidTranslation({ from: `${type}_1`, origin, translation, counts, trigger });
-    }
-
-    if (counts.origin < counts.translation / trigger) {
-      return this.invalidTranslation({ from: `${type}_2`, origin, translation, counts, trigger });
-    }
-
-    Database.manageRatio(counts.origin, counts.translation, type);
-
-    return true;
-  }
-
-  async isValidTranslation(translation, origin, file, uuid) {
-    if (translation.includes('\\"uuid-')) return false;
-
-    if (Toolbox.countWords(origin) <= 5 && Toolbox.countWords(translation) <= 5) return true;
-
-    const vChars = this.isValidTranslationLength(translation, origin, file, uuid, 'chars');
-    const vWords = this.isValidTranslationLength(translation, origin, file, uuid, 'words');
-    const vLang = await this.isValidTranslationLanguage(translation, file, uuid);
-
-    return vChars && vWords && vLang;
-  }
-
-  /** **********************************************************************************************
    **                                     Translate: Request                                      **
    ********************************************************************************************** */
 
@@ -707,9 +620,6 @@ export default class EpubInterface extends EventEmitter {
 
           Object.entries(translations[file]).forEach(async ([uuid, translation]) => {
             if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
-
-            if (!(await this.isValidTranslation(translation, query.data[file][uuid], file, uuid)))
-              return;
 
             Database.setTranslation(file, uuid, translation);
 
