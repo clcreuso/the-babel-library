@@ -1,7 +1,5 @@
 import EPUB from './objects/interfaces/EPUB.js';
 
-import Database from './objects/Database.js';
-
 import Logger from './config/logger.js';
 
 const epub = new EPUB({
@@ -14,7 +12,7 @@ const write = () => {
   epub.on('writed', () => {
     Logger.info('EPUB - WRITED');
 
-    Database.exit();
+    process.exit();
   });
 
   epub.write();
@@ -53,7 +51,5 @@ const init = () => {
 };
 
 (async () => {
-  await Database.init();
-
   init();
 })();

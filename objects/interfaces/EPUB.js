@@ -1,3 +1,5 @@
+/* eslint-disable import/no-extraneous-dependencies */
+
 /* eslint-disable no-restricted-syntax */
 
 import _ from 'lodash';
@@ -9,16 +11,12 @@ import prompt from 'prompt';
 import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
 import inquirer from 'inquirer';
+import beautify from 'simply-beautiful';
 
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
-import { isWithinTokenLimit } from 'gpt-tokenizer';
 import { createCanvas, loadImage } from 'canvas';
 import { Configuration, OpenAIApi } from 'openai';
-
-// import detectLanguage from '../modules/Language.js';
-
-import Database from '../Database.js';
 
 import getContext from '../queries/Main.js';
 
@@ -31,23 +29,6 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
-const MAX_TOKENS = 750;
-
-const USELESS_TAGS = [
-  'b',
-  'i',
-  'em',
-  'sup',
-  'strong',
-  'small',
-  'mark',
-  'del',
-  'ins',
-  'u',
-  's',
-  'span',
-];
-
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
@@ -56,7 +37,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-4o-mini-2024-07-18',
+      model: params.model || 'gpt-4o-2024-11-20',
     };
 
     this.metadata = params.metadata || {};
@@ -76,8 +57,8 @@ export default class EpubInterface extends EventEmitter {
     return `EPUB (${this.getEpubName()})`;
   }
 
-  getQuery() {
-    return _.find(this.queries, (query) => !query.finish && !query.waiting);
+  getFile() {
+    return _.find(Object.values(this.files), (file) => !file.finish && !file.waiting);
   }
 
   getIsoCode(language) {
@@ -87,8 +68,10 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getStatus() {
-    return `${this.getInfos()} - STATUS ${_.filter(this.queries, (query) => query.finish).length}/${
-      this.queries.length
+    const files = Object.values(this.files);
+
+    return `${this.getInfos()} - STATUS ${_.filter(files, (file) => file.finish).length}/${
+      files.length
     }`;
   }
 
@@ -158,29 +141,8 @@ export default class EpubInterface extends EventEmitter {
     );
   }
 
-  isUselessTag(tag) {
-    return [
-      'b',
-      'i',
-      'em',
-      'sup',
-      'strong',
-      'small',
-      'mark',
-      'del',
-      'ins',
-      'u',
-      's',
-      'span',
-    ].includes(tag);
-  }
-
-  hasFullyQuery(data) {
-    return !isWithinTokenLimit(data, MAX_TOKENS);
-  }
-
   hasFinishTranslation() {
-    return this.queries.every((query) => query.finish);
+    return Object.values(this.files).every((file) => file.finish);
   }
 
   readFile(path) {
@@ -189,164 +151,6 @@ export default class EpubInterface extends EventEmitter {
 
   writeFile(path, content) {
     fs.writeFileSync(path, content, { encoding: 'utf8' });
-  }
-
-  /** **********************************************************************************************
-   **                                        Helpers: HTML                                        **
-   ********************************************************************************************** */
-
-  removeSpecificATags(html) {
-    html = html.replace(/<a [^>]*\/>/g, '');
-    html = html.replace(/<a [^>]*><\/a>/g, '');
-    html = html.replace(/<a [^>]*>[0-9]+<\/a>/g, '');
-    html = html.replace(/<a [^>]*>([\s\S]+?)<\/a>/g, '$1');
-
-    return html;
-  }
-
-  replaceHtmlQuote(html) {
-    return html.replace(/>([^<]+)</g, (match, content) => {
-      content = content.replace(/("|"|“|”|《|》|«|»|‹|›|〈|〉|｢|｣|<<|>>)/g, `"`);
-      content = content.replace(/(^|\s)’|‘(\s|$)/g, `$1"$2`);
-      content = content.replace(/(^|\s)‘|’(\s|$)/g, `$1"$2`);
-
-      return `>${content}<`;
-    });
-  }
-
-  removeUselessTags(html) {
-    USELESS_TAGS.forEach((tag) => {
-      const openingTagRegex = new RegExp(`<\\s*${tag}(\\s[^>]*)?>`, 'g');
-      const closingTagRegex = new RegExp(`<\\s*\\/\\s*${tag}\\s*>`, 'g');
-
-      html = html.replace(openingTagRegex, (match) => {
-        Logger.debug(`${this.getInfos()} - REMOVE_USELESS_OPEN`, match);
-
-        return '';
-      });
-
-      html = html.replace(closingTagRegex, (match) => {
-        Logger.debug(`${this.getInfos()} - REMOVE_USELESS_CLOSE`, match);
-
-        return '';
-      });
-    });
-
-    return html;
-  }
-
-  // mergePara(html) {
-  //   return html.replace(
-  //     /(<p[^>]*>)(.*?)(<\/p>\s*<p[^>]*>)(.*?)(<\/p>)/gs,
-  //     (match, openingTag, firstContent, middleTag, secondContent, closingTag) => {
-  //       const result = `${openingTag}${`${firstContent} ${secondContent}`.trim()}${closingTag}`;
-
-  //       if (result.length <= 500) {
-  //         Logger.debug(`${this.getInfos()} - MERGE_PARA`, {
-  //           match,
-  //           result,
-  //         });
-
-  //         return result;
-  //       }
-
-  //       return match;
-  //     }
-  //   );
-  // }
-
-  removeXmlTags(html) {
-    return html.replace(/<\?(?!xml)[^>]+?\?>/g, (match) => {
-      Logger.debug(`${this.getInfos()} - DELETE_XML_TAG`, match);
-
-      return '';
-    });
-  }
-
-  getSplitIndex(text) {
-    let i = 0;
-    let words = 0;
-
-    while (text[i]) {
-      if (text[i] === ' ') words += 1;
-
-      if (words > 200) {
-        for (let j = 0; j < 100; j += 1) {
-          if (!text[i - j] || !text[i + j]) break;
-
-          if (text[i - j] === '.') {
-            i -= j;
-
-            break;
-          }
-
-          if (text[i + j] === '.') {
-            i += j;
-            break;
-          }
-        }
-
-        while (text[i] && !/[A-Z\\.]/.test(text[i])) {
-          i += 1;
-        }
-
-        if (text[i] === '.') i += 1;
-
-        break;
-      }
-
-      i += 1;
-    }
-
-    return { i, words };
-  }
-
-  splitHtmlText(html, regex) {
-    return html.replace(regex, (match, tag) => {
-      if (match.length < 2000) return match;
-
-      if (Toolbox.countWords(match) < 450) return match;
-
-      const { i, words } = this.getSplitIndex(match);
-
-      if (!match[i] || !match[i + 1]) return match;
-
-      if (match[i] === '<' || match[i + 1] === '<') return match;
-
-      if (words < 400) return match;
-
-      const openTag = match.match(/<([^\\/][^>]*)>/)[0];
-      const closeTag = match.match(/<\/([^ >]+)>/)[0];
-
-      Logger.debug(`${this.getInfos()} - SPLIT_HTML_TEXT`, {
-        i,
-        match,
-        words,
-        tag,
-        result: `${match.slice(0, i)}${closeTag}${openTag}${match.slice(i)}`,
-      });
-
-      return `${match.slice(0, i)}${closeTag}${openTag}${match.slice(i)}`;
-    });
-  }
-
-  readHTML(path) {
-    let html = this.readFile(path);
-
-    html = this.removeXmlTags(html);
-    html = this.replaceHtmlQuote(html);
-    html = this.removeSpecificATags(html);
-    html = this.removeUselessTags(html);
-
-    // _.times(200, () => {
-    //   html = this.mergePara(html);
-    // });
-
-    _.times(20, () => {
-      html = this.splitHtmlText(html, /<(\w+)[^>]*>([^<]+)<\/\1>/g);
-    });
-
-    return html;
   }
 
   /** **********************************************************************************************
@@ -490,31 +294,6 @@ export default class EpubInterface extends EventEmitter {
     return translation;
   }
 
-  translateFile(path, translations) {
-    const origins = this.files[path].tokens;
-
-    return Object.keys(translations).reduce((file, uuid) => {
-      if (typeof origins[uuid] !== 'string' || typeof translations[uuid] !== 'string') return file;
-
-      let translation = this.replaceTranslationQuote(translations[uuid]);
-
-      translation = translation.replace(/&(?!amp;)/g, '&amp;');
-
-      translation = translation.replaceAll('>', '&gt;');
-      translation = translation.replaceAll('<', '&lt;');
-
-      if (origins[uuid].startsWith(' ') && !translation.startsWith(' ')) {
-        translation = ` ${translation}`;
-      }
-
-      if (origins[uuid].endsWith(' ') && !translation.endsWith(' ')) {
-        translation = `${translation} `;
-      }
-
-      return file.replace(`>${origins[uuid]}<`, `>${translation}<`);
-    }, this.readHTML(path));
-  }
-
   writeEPUB() {
     const output = fs.createWriteStream(this.getEpubPath());
     const archive = zip('zip', { store: false });
@@ -575,17 +354,32 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
+  getResumeHTML(file) {
+    const html = this.readFile(file.path);
+
+    return html.replace(
+      /<body([^>]*)>([\s\S]*?)<\/body>/i,
+      beautify.html(`<body$1>${file.response}</body>`)
+    );
+  }
+
+  fixBrTags(html) {
+    html = html.replace(/<br\s*\/?>/gi, '<br />');
+
+    html = html.replace(/<\/\s*br>/gi, '');
+
+    return html;
+  }
+
   write() {
-    Object.entries(Database.translations).forEach(([path, translations]) => {
-      if (!path.startsWith(this.file.folder) || !this.files[path]) return;
+    Object.values(this.files).forEach((file) => {
+      let html = this.getResumeHTML(file);
 
-      let file = this.translateFile(path, translations);
+      html = this.fixBrTags(html);
 
-      file = this.fixQuoteFile(file);
+      this.writeFile(file.path, html);
 
-      this.writeFile(path, file);
-
-      Logger.info(`${this.getInfos()} - WRITE_FILE "${path}"`);
+      Logger.info(`${this.getInfos()} - WRITE_FILE "${file.path}"`);
     });
 
     this.writeEPUB();
@@ -610,37 +404,23 @@ export default class EpubInterface extends EventEmitter {
     );
   }
 
-  parseTranslationRequest(data, query) {
+  parseTranslationRequest(data, file) {
     try {
-      const translations = this.parseTranslationJSON(data);
+      const response = this.parseTranslationJSON(data);
 
-      if (translations) {
-        Object.keys(translations).forEach((file) => {
-          if (!this.files[file] || !query.data[file]) return;
+      file.finish = true;
 
-          Object.entries(translations[file]).forEach(async ([uuid, translation]) => {
-            if (!this.files[file].tokens[uuid] || !query.data?.[file]?.[uuid]) return;
-
-            Database.setTranslation(file, uuid, translation);
-
-            delete query.data?.[file]?.[uuid];
-          });
-
-          if (_.isEmpty(query.data[file])) delete query.data[file];
-        });
-
-        if (_.isEmpty(query.data)) query.finish = true;
-
-        Logger.info(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+      if (!response.content || response.content === 'undefined') {
+        file.response = '<h1>Page Vide</h1>';
       } else {
-        Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST ${query.id}`);
+        file.response = response.content;
       }
     } catch (error) {
       Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_JSON`, data.choices);
     }
   }
 
-  getTranslationParams(query) {
+  getTranslationParams(file) {
     return {
       model: this.params.model,
       messages: [
@@ -651,31 +431,32 @@ export default class EpubInterface extends EventEmitter {
             destination: this.params.destination,
             book_title: this.epub.metadata.title,
             book_author: this.epub.metadata.creator,
-            content: query.data,
+            content: file.content,
           }),
         },
       ],
     };
   }
 
-  sendTranslationRequest(query = this.getQuery()) {
-    if (!query) return;
+  sendTranslationRequest(file = this.getFile()) {
+    if (!file) return;
 
-    query.waiting = true;
+    file.waiting = true;
 
-    OpenAI.createChatCompletion(this.getTranslationParams(query))
-      .then((response) => this.parseTranslationRequest(response.data, query))
+    OpenAI.createChatCompletion(this.getTranslationParams(file))
+      .then((response) => {
+        this.parseTranslationRequest(response.data, file);
+
+        Logger.info(this.getStatus());
+      })
       .catch((err) =>
-        Logger.error(
-          `${this.getInfos()} - SEND_TRANSLATION_REQUEST ${query.id}`,
-          err.response?.data || err
-        )
+        Logger.error(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`, err.response?.data || err)
       )
       .finally(() => {
-        query.waiting = false;
+        file.waiting = false;
       });
 
-    Logger.info(`${this.getInfos()} - SEND_TRANSLATION_REQUEST ${query.id}`);
+    Logger.info(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`);
   }
 
   /** **********************************************************************************************
@@ -699,17 +480,10 @@ export default class EpubInterface extends EventEmitter {
   }
 
   startTranslateInterval() {
-    let index = 0;
     this.stopTranslateInterval();
 
     this.timers.queries.id = setInterval(() => {
-      index += 1;
-
-      if (index % 500) {
-        this.onTranslateInterval();
-      } else {
-        this.parseQueries();
-      }
+      this.onTranslateInterval();
     }, this.timers.queries.interval);
 
     Logger.info(`${this.getInfos()} - START_TRANSLATE_INTERVAL`);
@@ -720,88 +494,37 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                       Parse: Queries                                        **
-   ********************************************************************************************** */
-
-  parseQueries() {
-    let id = 0;
-
-    this.queries = [];
-
-    Object.keys(this.files).forEach((path) => {
-      Object.entries(this.files[path].tokens).forEach(([uuid, text]) => {
-        if (Database.hasTranslation(path, uuid)) return;
-
-        if (this.queries[id] && this.hasFullyQuery(text)) id += 1;
-
-        this.queries[id] ||= { id, finish: false, waiting: false, data: {} };
-
-        this.queries[id].data[path] ||= {};
-        this.queries[id].data[path][uuid] = text;
-
-        if (this.hasFullyQuery(JSON.stringify(this.queries[id].data))) id += 1;
-      });
-    });
-
-    Logger.info(`${this.getInfos()} - PARSE_QUERIES`);
-  }
-
-  /** **********************************************************************************************
    **                                         Parse: HTML                                         **
    ********************************************************************************************** */
 
-  manageUUID(path) {
-    this.files[path].elements += 1;
+  hasUselessContent(path) {
+    if (this.files[path].content.length < 2500) return true;
 
-    return `uuid-${this.files[path].elements}`;
-  }
+    if (Toolbox.countWords(this.files[path].content) < 250) return true;
 
-  manageText(path, uuid) {
-    if (Toolbox.hasText(this.files[path].tokens[uuid])) return;
-
-    delete this.files[path].tokens[uuid];
-  }
-
-  manageTag(html, index) {
-    if (html.slice(index, index + 4) === '<pre') {
-      return html.indexOf('</pre>', index);
-    }
-
-    if (html.slice(index, index + 5) === '<code') {
-      return html.indexOf('</code>', index);
-    }
-
-    if (html.slice(index, index + 5) === '<math') {
-      return html.indexOf('</math>', index);
-    }
-
-    if (html.slice(index, index + 6) === '<style') {
-      return html.indexOf('</style>', index);
-    }
-
-    return index;
+    return false;
   }
 
   parseHTML(path) {
-    this.files[path] = { path, tokens: {}, elements: 0 };
+    this.files[path] = { path, content: '', response: null, finish: false };
 
-    const html = this.readHTML(path, true);
+    const html = this.readFile(path);
 
     for (let index = 0; index < html.length; index += 1) {
-      index = this.manageTag(html, index);
-
       if (html[index] === '>') {
-        const uuid = this.manageUUID(path);
-
         while (html[index + 1] && html[index + 1] !== '<') {
           index += 1;
 
-          this.files[path].tokens[uuid] ||= '';
-          this.files[path].tokens[uuid] += html[index];
+          this.files[path].content += html[index];
         }
-
-        this.manageText(path, uuid);
       }
+    }
+
+    this.files[path].content = this.files[path].content.replace(/\s+/g, ' ');
+
+    if (this.hasUselessContent(path)) {
+      this.files[path].response = '<h1>Page Vide</h1>';
+      this.files[path].finish = true;
     }
   }
 
@@ -825,8 +548,6 @@ export default class EpubInterface extends EventEmitter {
         this.parseHTML(path);
       }
     });
-
-    this.parseQueries();
 
     this.emit('parsed');
   }
@@ -886,16 +607,6 @@ export default class EpubInterface extends EventEmitter {
    **                                            Init                                             **
    ********************************************************************************************** */
 
-  initDatabase() {
-    Database.setHash(this.file.hash);
-    Database.setUser(this.params.user);
-    Database.setSource(this.params.source);
-    Database.setDestination(this.params.destination);
-
-    Database.readRatios();
-    Database.readTranslations();
-  }
-
   initEpub() {
     if (fs.existsSync(this.file.folder)) {
       fs.rmSync(this.file.folder, { recursive: true, force: true });
@@ -928,7 +639,6 @@ export default class EpubInterface extends EventEmitter {
     this.epub.on('end', async () => {
       this.initEpub();
       this.initPaths();
-      this.initDatabase();
 
       await this.promptCover();
       await this.promptMetadata();

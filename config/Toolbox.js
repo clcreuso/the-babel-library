@@ -19,6 +19,8 @@ class Toolbox {
   }
 
   hasText(text) {
+    if (text === undefined) return false;
+
     return !/^[^\p{L}]*$/u.test(text);
   }
 

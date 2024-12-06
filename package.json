@@ -26,7 +26,8 @@
     "node-json-db": "^2.2.0",
     "openai": "^3.2.1",
     "prettier": "^2.3.0",
-    "prompt": "^1.3.0"
+    "prompt": "^1.3.0",
+    "simply-beautiful": "^1.0.1"
   },
   "devDependencies": {
     "eslint": "^7.27.0",
