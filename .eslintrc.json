@@ -1,0 +1,28 @@
+{
+    "env": {
+        "es2021": true,
+        "node": true
+    },
+    "extends": [
+        "airbnb-base",
+        "prettier"
+    ],
+    "parserOptions": {
+        "ecmaVersion": 12,
+        "sourceType": "module"
+    },
+    "plugins": [
+        "prettier"
+    ],
+    "rules": {
+        "camelcase": "off",
+        "import/extensions": 0,
+        "import/prefer-default-export": "off",
+        "import/no-cycle": "off",
+        "max-len": ["error", {"code": 100}],
+        "prettier/prettier": "error",
+        "class-methods-use-this": 0,
+        "no-param-reassign": 0,
+        "no-return-assign": 0
+    }
+}
