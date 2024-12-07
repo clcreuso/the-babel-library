@@ -354,10 +354,18 @@ export default class EpubInterface extends EventEmitter {
     );
   }
 
-  fixBrTags(html) {
+  fixHTML(html) {
     html = html.replace(/<br\s*\/?>/gi, '<br />');
 
     html = html.replace(/<\/\s*br>/gi, '');
+
+    html = html.replace(/&nbsp;/g, '');
+
+    html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/g, '');
+
+    html = html.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+    html = html.replace(/^\s*[\r\n]/gm, '');
 
     return html;
   }
@@ -368,6 +376,8 @@ export default class EpubInterface extends EventEmitter {
     html = html.replace(new RegExp(`<[^>]+?${text}[^>]*?\\/?>`, 'gi'), '');
 
     html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/gi, '');
+
+    html = html.replace(/^\s*[\r\n]/gm, '');
 
     return html;
   }
@@ -383,7 +393,7 @@ export default class EpubInterface extends EventEmitter {
       } else if (file.response) {
         html = this.getResumeHTML(html, file);
 
-        html = this.fixBrTags(html);
+        html = this.fixHTML(html);
 
         this.writeFile(file.path, html);
 
@@ -400,6 +410,8 @@ export default class EpubInterface extends EventEmitter {
         html = html.replace(/<navMap>[\s\S]*?<\/navMap>/, '');
 
         html = html.replace(/<pageList>[\s\S]*?<\/pageList>/, '');
+
+        html = html.replace(/^\s*[\r\n]/gm, '');
 
         this.writeFile(path, html);
       }
