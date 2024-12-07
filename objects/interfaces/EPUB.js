@@ -38,7 +38,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-4o-2024-11-20',
+      model: params.model || 'gpt-4o-mini-2024-07-18' || 'gpt-4o-2024-11-20',
     };
 
     this.metadata = params.metadata || {};
@@ -359,28 +359,38 @@ export default class EpubInterface extends EventEmitter {
 
     html = html.replace(/<\/\s*br>/gi, '');
 
-    html = html.replace(/&nbsp;/g, '');
+    html = html.replace(/&nbsp;/g, ' ');
 
     html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/g, '');
 
-    html = html.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-
     html = html.replace(/^\s*[\r\n]/gm, '');
+
+    html = html.replace(/&(?!\w+;|#\d+;|#x[\da-fA-F]+;)/g, '&amp;');
+
+    html = html.replace(/(<[^>]+>|[^<]+)/g, (match, p1) => {
+      if (p1.startsWith('<')) return p1;
+
+      return match
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    });
 
     return html;
   }
 
-  removeElement(html, text) {
-    html = html.replace(new RegExp(`<[^>]+>[^<]*${text}[^<]*<\\/[^>]+>`, 'gi'), '');
+  // removeElement(html, text) {
+  //   html = html.replace(new RegExp(`<[^>]+>[^<]*${text}"[^<]*<\\/[^>]+>`, 'gi'), '');
 
-    html = html.replace(new RegExp(`<[^>]+?${text}[^>]*?\\/?>`, 'gi'), '');
+  //   html = html.replace(new RegExp(`<[^>]+?${text}"[^>]*?\\/?>`, 'gi'), '');
 
-    html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/gi, '');
+  //   html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/gi, '');
 
-    html = html.replace(/^\s*[\r\n]/gm, '');
+  //   html = html.replace(/^\s*[\r\n]/gm, '');
 
-    return html;
-  }
+  //   return html;
+  // }
 
   write() {
     Object.values(this.files).forEach((file) => {
@@ -390,7 +400,7 @@ export default class EpubInterface extends EventEmitter {
         this.writeFile(file.path, html);
 
         Logger.info(`${this.getInfos()} - WRITE_FILE "${file.path}"`);
-      } else if (file.response) {
+      } else {
         html = this.getResumeHTML(html, file);
 
         html = this.fixHTML(html);
@@ -398,42 +408,41 @@ export default class EpubInterface extends EventEmitter {
         this.writeFile(file.path, html);
 
         Logger.info(`${this.getInfos()} - WRITE_FILE "${file.path}"`);
-      } else {
-        _.remove(this.file.paths, (item) => item === file.path);
       }
+      // _.remove(this.file.paths, (item) => item === file.path);
     });
 
-    this.file.paths.forEach((path) => {
-      if (path.endsWith('.ncx')) {
-        let html = this.readFile(path);
+    // this.file.paths.forEach((path) => {
+    //   if (path.endsWith('.ncx')) {
+    //     let html = this.readFile(path);
 
-        html = html.replace(/<navMap>[\s\S]*?<\/navMap>/, '');
+    //     html = html.replace(/<navMap>[\s\S]*?<\/navMap>/, '');
 
-        html = html.replace(/<pageList>[\s\S]*?<\/pageList>/, '');
+    //     html = html.replace(/<pageList>[\s\S]*?<\/pageList>/, '');
 
-        html = html.replace(/^\s*[\r\n]/gm, '');
+    //     html = html.replace(/^\s*[\r\n]/gm, '');
 
-        this.writeFile(path, html);
-      }
+    //     this.writeFile(path, html);
+    //   }
 
-      if (path.endsWith('.opf')) {
-        let html = this.readFile(path);
+    //   if (path.endsWith('.opf')) {
+    //     let html = this.readFile(path);
 
-        Object.values(this.files).forEach((file) => {
-          if (file.response) return;
+    //     Object.values(this.files).forEach((file) => {
+    //       if (file.response) return;
 
-          const info = this.getFileInfo(file.path);
+    //       const info = this.getFileInfo(file.path);
 
-          html = this.removeElement(html, info.id);
+    //       html = this.removeElement(html, info.id);
 
-          html = this.removeElement(html, info.href);
+    //       html = this.removeElement(html, info.href);
 
-          html = this.removeElement(html, info.filename);
-        });
+    //       html = this.removeElement(html, info.filename);
+    //     });
 
-        this.writeFile(path, html);
-      }
-    });
+    //     this.writeFile(path, html);
+    //   }
+    // });
 
     this.writeEPUB();
   }
@@ -442,34 +451,44 @@ export default class EpubInterface extends EventEmitter {
    **                                     Translate: Request                                      **
    ********************************************************************************************** */
 
-  secureJsonParseJSON(str) {
+  secureJsonParseJSON(str, count) {
     try {
       str = str.replace('```json', '').replace('```', '');
 
       return JSON.parse(str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1));
     } catch (error) {
-      Logger.error(`${this.getInfos()} - SECURE_JSON_PARSE_JSON`, str);
+      Logger.error(`${this.getInfos()} - SECURE_JSON_PARSE_JSON_${count}`, str, error);
 
       return undefined;
     }
   }
 
   parseResponseJSON(data) {
-    return (
-      this.secureJsonParseJSON(data.choices[0].message.content) ||
-      this.secureJsonParseJSON(jsonrepair(data.choices[0].message.content))
-    );
+    try {
+      return this.secureJsonParseJSON(data.choices[0].message.content, 1);
+    } catch (error) {
+      return this.secureJsonParseJSON(jsonrepair(data.choices[0].message.content, 2));
+    }
   }
 
   parseTranslationRequest(data, file) {
     try {
       const response = this.parseResponseJSON(data);
 
-      file.finish = true;
-
       if (!response.content || response.content === 'undefined') {
-        file.response = undefined;
+        if (file.count < 3) {
+          file.count += 1;
+
+          Logger.warn(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST`, {
+            path: file.path,
+            count: file.count,
+          });
+        } else {
+          file.finish = true;
+          file.response = '<h1>X</h1>';
+        }
       } else {
+        file.finish = true;
         file.response = response.content;
       }
     } catch (error) {
@@ -565,7 +584,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   parseHTML(path) {
-    this.files[path] = { path, content: '', response: null, finish: false };
+    this.files[path] = { path, content: '', response: null, count: 0, finish: false };
 
     const html = this.readFile(path);
 
@@ -588,7 +607,7 @@ export default class EpubInterface extends EventEmitter {
     this.files[path].content = this.files[path].content.replace(/\s+/g, ' ');
 
     if (this.hasUselessContent(path)) {
-      this.files[path].response = undefined;
+      this.files[path].response = '<h1>X</h1>';
       this.files[path].finish = true;
     }
   }
