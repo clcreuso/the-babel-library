@@ -16,6 +16,7 @@ import beautify from 'simply-beautiful';
 
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
+import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
 import { Configuration, OpenAIApi } from 'openai';
 
@@ -30,6 +31,23 @@ const OpenAI = new OpenAIApi(
   new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
 );
 
+function cleanHtmlForEpub(html) {
+  const options = {
+    collapseWhitespace: true,
+    keepClosingSlash: true,
+    minifyCSS: true,
+    minifyJS: true,
+    removeComments: true,
+    removeEmptyAttributes: true,
+    removeRedundantAttributes: true,
+    removeScriptTypeAttributes: true,
+    removeStyleLinkTypeAttributes: true,
+    useShortDoctype: true,
+  };
+
+  return minify(html, options);
+}
+
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
@@ -38,7 +56,8 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-4o-mini-2024-07-18' || 'gpt-4o-2024-11-20',
+      model: params.model || 'gpt-4o-2024-11-20',
+      // model: params.model || 'gpt-4o-mini-2024-07-18',
     };
 
     this.metadata = params.metadata || {};
@@ -276,7 +295,7 @@ export default class EpubInterface extends EventEmitter {
     context.font = '34px "Times New Roman"';
     context.fillText('The Babel Library', 160, 45);
     context.font = '20px "Times New Roman"';
-    context.fillText(`Translated from "${this.params.source}"`, 142, 70);
+    context.fillText(`-- Summarized --`, 142, 70);
 
     const buffer = canvas.toBuffer(mime.lookup(path));
 
@@ -312,72 +331,11 @@ export default class EpubInterface extends EventEmitter {
     archive.finalize();
   }
 
-  fixQuoteSpaces(text) {
-    let newText = '';
-    let quoteIndex = 0;
-
-    for (let i = 0; i < text.length; i += 1) {
-      if (text[i] === '"') {
-        if (quoteIndex % 2 === 0) {
-          newText = `${newText}${text[i]}`;
-
-          while (text[i + 1] && text[i + 1] === ' ') i += 1;
-        } else {
-          while (newText[newText.length - 1] && newText[newText.length - 1] === ' ') {
-            newText = newText.slice(0, -1);
-          }
-
-          newText = `${newText}${text[i]}`;
-        }
-
-        quoteIndex += 1;
-      } else {
-        newText = `${newText}${text[i]}`;
-      }
-    }
-
-    return newText;
-  }
-
-  fixQuoteFile(file) {
-    return file.replace(/>[\w\s.,;:'"?!-]+</g, (match) => {
-      if (!match.includes('"')) return match;
-
-      return this.fixQuoteSpaces(match);
-    });
-  }
-
   getResumeHTML(html, file) {
     return html.replace(
       /<body([^>]*)>([\s\S]*?)<\/body>/i,
       beautify.html(`<body$1>${file.response}</body>`)
     );
-  }
-
-  fixHTML(html) {
-    html = html.replace(/<br\s*\/?>/gi, '<br />');
-
-    html = html.replace(/<\/\s*br>/gi, '');
-
-    html = html.replace(/&nbsp;/g, ' ');
-
-    html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/g, '');
-
-    html = html.replace(/^\s*[\r\n]/gm, '');
-
-    html = html.replace(/&(?!\w+;|#\d+;|#x[\da-fA-F]+;)/g, '&amp;');
-
-    html = html.replace(/(<[^>]+>|[^<]+)/g, (match, p1) => {
-      if (p1.startsWith('<')) return p1;
-
-      return match
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-    });
-
-    return html;
   }
 
   // removeElement(html, text) {
@@ -403,7 +361,7 @@ export default class EpubInterface extends EventEmitter {
       } else {
         html = this.getResumeHTML(html, file);
 
-        html = this.fixHTML(html);
+        html = html.replace(/<br\s*\/?>/gi, '<br />');
 
         this.writeFile(file.path, html);
 
@@ -471,7 +429,7 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  parseTranslationRequest(data, file) {
+  async parseTranslationRequest(data, file) {
     try {
       const response = this.parseResponseJSON(data);
 
@@ -488,8 +446,25 @@ export default class EpubInterface extends EventEmitter {
           file.response = '<h1>X</h1>';
         }
       } else {
-        file.finish = true;
-        file.response = response.content;
+        file.response = await cleanHtmlForEpub(response.content)
+          .then((html) => {
+            file.finish = true;
+
+            return html;
+          })
+          .catch((err) => {
+            file.count += 1;
+
+            if (file.count < 3) {
+              file.finish = false;
+              file.response = undefined;
+            } else {
+              file.finish = true;
+              file.response = '<h1>X</h1>';
+            }
+
+            Logger.error(`${this.getInfos()} - CLEAN_HTML_FOR_EPUB`, err);
+          });
       }
     } catch (error) {
       Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_JSON`, data.choices);

@@ -13,6 +13,7 @@
     "epub": "^1.2.1",
     "franc": "^6.1.0",
     "gpt-tokenizer": "^2.1.1",
+    "html-minifier-terser": "^7.2.0",
     "inquirer": "^9.2.10",
     "iso-639-1": "^2.1.15",
     "jsdom": "^22.1.0",
