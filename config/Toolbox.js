@@ -25,11 +25,19 @@ class Toolbox {
   }
 
   countWords(text) {
-    if (text === '') return 0;
+    if (!text.trim()) return 0;
 
     const words = text.split(/[\s,.-]+/);
 
     return words.filter((word) => this.hasText(word)).length;
+  }
+
+  countSentences(text) {
+    if (!text.trim()) return 0;
+
+    const sentences = text.split(/[.!?]+/).filter((sentence) => sentence.trim());
+
+    return sentences.length;
   }
 
   writeFullObject(object) {

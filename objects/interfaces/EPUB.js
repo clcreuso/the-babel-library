@@ -77,6 +77,14 @@ export default class EpubInterface extends EventEmitter {
     return `EPUB (${this.getEpubName()})`;
   }
 
+  getTextStats(text) {
+    return {
+      chars: text.length,
+      words: Toolbox.countWords(text),
+      sentences: Toolbox.countSentences(text),
+    };
+  }
+
   getFile() {
     return _.find(Object.values(this.files), (file) => !file.finish && !file.waiting);
   }
@@ -119,11 +127,11 @@ export default class EpubInterface extends EventEmitter {
   getEpubName() {
     const { title, subtitle, creator } = this.metadata;
 
-    if (title && subtitle && creator) return `${title} - ${subtitle} | ${creator} (résumé)`;
+    if (title && subtitle && creator) return `${title} - ${subtitle} | ${creator}`;
 
-    if (title && creator) return `${title} | ${creator} (résumé)`;
+    if (title && creator) return `${title} | ${creator}`;
 
-    return `${title} (résumé)`;
+    return `${title}`;
   }
 
   getEpubPath() {
@@ -411,7 +419,9 @@ export default class EpubInterface extends EventEmitter {
 
   secureJsonParseJSON(str, count) {
     try {
-      str = str.replace('```json', '').replace('```', '');
+      str = str.replaceAll('```json', '').replaceAll('```', '');
+
+      str = str.replaceAll(': undefined', ': "undefined"');
 
       return JSON.parse(str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1));
     } catch (error) {
@@ -450,7 +460,7 @@ export default class EpubInterface extends EventEmitter {
           .then((html) => {
             file.finish = true;
 
-            return html;
+            return html.replace(/&(?!amp;)/g, '&amp;');
           })
           .catch((err) => {
             file.count += 1;
@@ -551,11 +561,15 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   hasUselessContent(path) {
-    if (this.files[path].content.length < 2500) return true;
+    const stats = this.getTextStats(this.files[path].content);
 
-    if (Toolbox.countWords(this.files[path].content) < 250) return true;
+    if (stats.words > 100) return false;
 
-    return false;
+    if (stats.chars > 1500) return false;
+
+    Logger.warn(`${this.getInfos()} - HAS_USELESS_CONTENT`, { path, stats });
+
+    return true;
   }
 
   parseHTML(path) {
@@ -648,7 +662,7 @@ export default class EpubInterface extends EventEmitter {
           { name: 'series_volume', description: 'Book series volume' },
         ],
         (_err, result) => {
-          this.metadata.title = result.title;
+          this.metadata.title = `${result.title} (résumé)`;
           this.metadata.subtitle = result.subtitle;
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
