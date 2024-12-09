@@ -46,8 +46,8 @@ export default class EpubInterface extends EventEmitter {
 
     this.params = {
       user: params.user || 'Default',
-      // model: params.model || 'gpt-4o-2024-11-20',
-      model: params.model || 'claude-3-5-sonnet-latest',
+      model: params.model || 'gpt-4o-2024-11-20',
+      // model: params.model || 'claude-3-5-sonnet-latest',
     };
 
     this.metadata = params.metadata || {};
@@ -452,7 +452,11 @@ export default class EpubInterface extends EventEmitter {
           .then((html) => {
             file.finish = true;
 
-            return html.replace(/&(?!amp;)/g, '&amp;');
+            html = html.replace(/&(?!amp;)/g, '&amp;');
+
+            html = html.replace(/<p>/g, '<p style="margin-top: 10px; margin-bottom: 10px;">');
+
+            return html;
           })
           .catch((err) => {
             file.count += 1;
