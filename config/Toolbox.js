@@ -1,7 +1,6 @@
 import fs from 'fs';
 import util from 'util';
 import crypto from 'crypto';
-import iso6391 from 'iso-639-1';
 
 class Toolbox {
   /** **********************************************************************************************
@@ -10,12 +9,6 @@ class Toolbox {
 
   sleep(time) {
     return new Promise((res) => setTimeout(() => res(), time));
-  }
-
-  getIsoCode(language) {
-    const code = iso6391.getCode(language);
-
-    return code ? code.toLowerCase() : null;
   }
 
   hasText(text) {

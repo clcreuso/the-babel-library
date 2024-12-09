@@ -4,8 +4,6 @@ import Logger from './config/logger.js';
 
 const epub = new EPUB({
   path: process.argv[2],
-  source: 'Egnlish',
-  destination: 'French',
 });
 
 const write = () => {

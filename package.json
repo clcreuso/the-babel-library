@@ -5,6 +5,7 @@
   "main": "script.js",
   "private": true,
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
     "archiver": "^5.3.1",
     "better-sqlite3": "^8.5.1",
     "canvas": "^2.11.2",

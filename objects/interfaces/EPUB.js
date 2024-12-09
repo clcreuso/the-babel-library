@@ -7,10 +7,9 @@ import _ from 'lodash';
 import fs from 'fs';
 import EPUB from 'epub';
 import zip from 'archiver';
-import dotenv from 'dotenv';
+
 import prompt from 'prompt';
 import mime from 'mime-types';
-import iso6391 from 'iso-639-1';
 import inquirer from 'inquirer';
 import beautify from 'simply-beautiful';
 
@@ -18,18 +17,11 @@ import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
 import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
-import { Configuration, OpenAIApi } from 'openai';
-
-import getContext from '../queries/Main.js';
 
 import Logger from '../../config/logger.js';
 import Toolbox from '../../config/Toolbox.js';
 
-dotenv.config();
-
-const OpenAI = new OpenAIApi(
-  new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
-);
+import sendRequest from '../queries/Request.js';
 
 function cleanHtmlForEpub(html) {
   const options = {
@@ -53,11 +45,9 @@ export default class EpubInterface extends EventEmitter {
     super();
 
     this.params = {
-      user: params.user || 'Toto',
-      source: params.source || 'English',
-      destination: params.destination || 'French',
-      model: params.model || 'gpt-4o-2024-11-20',
-      // model: params.model || 'gpt-4o-mini-2024-07-18',
+      user: params.user || 'Default',
+      // model: params.model || 'gpt-4o-2024-11-20',
+      model: params.model || 'claude-3-5-sonnet-latest',
     };
 
     this.metadata = params.metadata || {};
@@ -87,12 +77,6 @@ export default class EpubInterface extends EventEmitter {
 
   getFile() {
     return _.find(Object.values(this.files), (file) => !file.finish && !file.waiting);
-  }
-
-  getIsoCode(language) {
-    const code = iso6391.getCode(language);
-
-    return code ? code.toLowerCase() : null;
   }
 
   getStatus() {
@@ -224,9 +208,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getMetadataLanguage() {
-    const iso = this.getIsoCode(this.params.destination);
-
-    return iso ? `<dc:language>${iso}</dc:language>` : ``;
+    return `<dc:language>fr</dc:language>`;
   }
 
   getMetadataSerie() {
@@ -443,7 +425,7 @@ export default class EpubInterface extends EventEmitter {
 
   parseResponseJSON(data) {
     try {
-      return this.secureJsonParseJSON(data.choices[0].message.content);
+      return this.secureJsonParseJSON(data);
     } catch (error1) {
       return undefined;
     }
@@ -491,32 +473,19 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  getTranslationParams(file) {
-    return {
-      model: this.params.model,
-      messages: [
-        {
-          role: 'user',
-          content: getContext({
-            source: this.params.source,
-            destination: this.params.destination,
-            book_title: this.epub.metadata.title,
-            book_author: this.epub.metadata.creator,
-            content: file.content,
-          }),
-        },
-      ],
-    };
-  }
-
   sendTranslationRequest(file = this.getFile()) {
     if (!file) return;
 
     file.waiting = true;
 
-    OpenAI.createChatCompletion(this.getTranslationParams(file))
+    sendRequest({
+      model: this.params.model,
+      title: this.epub.metadata.title,
+      author: this.epub.metadata.creator,
+      content: file.content,
+    })
       .then((response) => {
-        this.parseTranslationRequest(response.data, file);
+        this.parseTranslationRequest(response, file);
 
         Logger.info(this.getStatus());
       })
