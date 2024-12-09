@@ -417,15 +417,25 @@ export default class EpubInterface extends EventEmitter {
    **                                     Translate: Request                                      **
    ********************************************************************************************** */
 
-  secureJsonParseJSON(str, count) {
+  getRepairJSON(str) {
     try {
-      str = str.replaceAll('```json', '').replaceAll('```', '');
+      let result = str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1);
 
-      str = str.replaceAll(': undefined', ': "undefined"');
+      result = result.replaceAll(': undefined', ': "undefined"');
 
-      return JSON.parse(str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1));
+      return jsonrepair(result);
     } catch (error) {
-      Logger.error(`${this.getInfos()} - SECURE_JSON_PARSE_JSON_${count}`, str, error);
+      Logger.error(`${this.getInfos()} - GET_REPAIR_JSON`, str, error);
+
+      return str;
+    }
+  }
+
+  secureJsonParseJSON(str) {
+    try {
+      return JSON.parse(this.getRepairJSON(str));
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - SECURE_JSON_PARSE_JSON`, str, error);
 
       return undefined;
     }
@@ -433,9 +443,9 @@ export default class EpubInterface extends EventEmitter {
 
   parseResponseJSON(data) {
     try {
-      return this.secureJsonParseJSON(data.choices[0].message.content, 1);
-    } catch (error) {
-      return this.secureJsonParseJSON(jsonrepair(data.choices[0].message.content, 2));
+      return this.secureJsonParseJSON(data.choices[0].message.content);
+    } catch (error1) {
+      return undefined;
     }
   }
 
