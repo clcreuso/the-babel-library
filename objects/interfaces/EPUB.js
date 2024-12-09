@@ -48,6 +48,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Default',
       model: params.model || 'gpt-4o-2024-11-20',
       // model: params.model || 'claude-3-5-sonnet-latest',
+      language: params.language || 'French',
     };
 
     this.metadata = params.metadata || {};
@@ -173,9 +174,11 @@ export default class EpubInterface extends EventEmitter {
     const title = this.metadata.title || this.epub.metadata.title;
 
     return title
-      ? `<dc:title id="t1">${title}</dc:title>
-    <meta property="title-type" refines="#t1">main</meta>
-    <meta property="display-seq" refines="#t1">1</meta>`
+      ? [
+          `\t<dc:title id="t1">${title}</dc:title>`,
+          `\t<meta property="title-type" refines="#t1">main</meta>`,
+          `\t<meta property="display-seq" refines="#t1">1</meta>`,
+        ].join('\n')
       : ``;
   }
 
@@ -183,52 +186,58 @@ export default class EpubInterface extends EventEmitter {
     const { subtitle } = this.metadata;
 
     return subtitle
-      ? `<dc:title id="t2">${subtitle}</dc:title>
-    <meta property="title-type" refines="#t2">subtitle</meta>
-    <meta property="display-seq" refines="#t2">1</meta>`
+      ? [
+          `\t<dc:title id="t2">${subtitle}</dc:title>`,
+          `\t<meta property="title-type" refines="#t2">subtitle</meta>`,
+          `\t<meta property="display-seq" refines="#t2">1</meta>`,
+        ].join('\n')
       : ``;
   }
 
   getMetadataCreator() {
     const creator = this.metadata.creator || this.epub.metadata.creator;
 
-    return creator ? `<dc:creator>${creator}</dc:creator>` : ``;
+    return creator ? `\t<dc:creator>${creator}</dc:creator>` : ``;
   }
 
   getMetadataDate() {
     const { date } = this.epub.metadata;
 
-    return date ? `<dc:date>${date}</dc:date>` : ``;
+    return date ? `\t<dc:date>${date}</dc:date>` : ``;
   }
 
   getMetadataPublisher() {
     const { publisher } = this.epub.metadata || 'The Babel Library';
 
-    return publisher ? `<dc:publisher>${publisher}</dc:publisher>` : ``;
+    return publisher ? `\t<dc:publisher>${publisher}</dc:publisher>` : ``;
   }
 
   getMetadataLanguage() {
-    return `<dc:language>fr</dc:language>`;
+    const iso = Toolbox.getIsoCode(this.params.language);
+
+    return iso ? `\t<dc:language>${iso}</dc:language>` : ``;
   }
 
   getMetadataSerie() {
     const { series_name } = this.metadata;
 
-    return series_name ? `<meta name="calibre:series" content="${series_name}"/>` : ``;
+    return series_name ? `\t<meta name="calibre:series" content="${series_name}"/>` : ``;
   }
 
   getMetadataSeriesIndex() {
     const { series_volume } = this.metadata;
 
-    return series_volume ? `<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
+    return series_volume ? `\t<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
   }
 
   getMetadataCover() {
-    return this.metadata.cover_id ? `<meta name="cover" content="${this.metadata.cover_id}"/>` : ``;
+    return this.metadata.cover_id
+      ? `\t<meta name="cover" content="${this.metadata.cover_id}"/>`
+      : ``;
   }
 
   getMetadata() {
-    return [
+    return _.compact([
       this.getMetadataTitle(),
       this.getMetadataSubtitle(),
       this.getMetadataCreator(),
@@ -238,7 +247,7 @@ export default class EpubInterface extends EventEmitter {
       this.getMetadataSerie(),
       this.getMetadataSeriesIndex(),
       this.getMetadataCover(),
-    ].join('');
+    ]).join('\n');
   }
 
   writeOPF(path) {
@@ -246,7 +255,7 @@ export default class EpubInterface extends EventEmitter {
 
     content = content.replace(
       /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/,
-      `$1${this.getMetadata()}$3`
+      `$1\n${this.getMetadata()}\n$3`
     );
 
     content = content.replace(/&(?!amp;)/g, '&amp;');
@@ -436,7 +445,7 @@ export default class EpubInterface extends EventEmitter {
       const response = this.parseResponseJSON(data);
 
       if (!response.content || response.content === 'undefined') {
-        if (file.count < 3) {
+        if (file.count < 1) {
           file.count += 1;
 
           Logger.warn(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST`, {
@@ -484,6 +493,7 @@ export default class EpubInterface extends EventEmitter {
 
     sendRequest({
       model: this.params.model,
+      language: this.params.language,
       title: this.epub.metadata.title,
       author: this.epub.metadata.creator,
       content: file.content,
@@ -493,9 +503,11 @@ export default class EpubInterface extends EventEmitter {
 
         Logger.info(this.getStatus());
       })
-      .catch((err) =>
-        Logger.error(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`, err.response?.data || err)
-      )
+      .catch((err) => {
+        file.waiting = false;
+
+        Logger.error(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`, err.response?.data || err);
+      })
       .finally(() => {
         file.waiting = false;
       });
@@ -645,8 +657,8 @@ export default class EpubInterface extends EventEmitter {
           { name: 'series_volume', description: 'Book series volume' },
         ],
         (_err, result) => {
-          this.metadata.title = `${result.title} (résumé)`;
-          this.metadata.subtitle = result.subtitle;
+          this.metadata.title = result.title;
+          this.metadata.subtitle = `Summarized by ${this.params.model}`;
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
           this.metadata.series_volume = result.series_volume;

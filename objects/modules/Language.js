@@ -70,6 +70,7 @@ const detectLanguageLangDetect = (text) => {
       pt: 'Portuguese',
       ar: 'Arabic',
       ms: 'Malay',
+      tha: 'Thai',
     };
 
     return languagesMap[language];
