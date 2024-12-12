@@ -1,7 +1,7 @@
 <div align="center">
    <h1 align="center">The Babel Library</h1>
    <br>
-   <img src="/images/cover.png" width="50%">
+   <img src="/assets/cover.png" width="50%">
 </div>
 
 <br>
@@ -38,7 +38,7 @@ To locate your Organization ID:
 - Look under the "Organization -> Settings" heading in the left column. Your Organization ID will be listed there.
 
 <div align="center">
-   <img src="/images/docs/org_id.png" width="50%">
+   <img src="/assets/docs/org_id.png" width="50%">
 </div>
 
 ### 2. Add a Payment Method
@@ -49,7 +49,7 @@ Before you can create an API key, you must have a valid payment method on file:
 - Follow the prompts to add a new payment method.
   
 <div align="center">
-   <img src="/images/docs/payment_method.png" width="50%">
+   <img src="/assets/docs/payment_method.png" width="50%">
 </div>
 
 ### 3. Create an API Key
@@ -59,7 +59,7 @@ Before you can create an API key, you must have a valid payment method on file:
 - Give your key a recognizable name and select the appropriate scope.
    
 <div align="center">
-   <img src="/images/docs/create_key.png" width="50%">
+   <img src="/assets/docs/create_key.png" width="50%">
 </div>
 
 
@@ -69,7 +69,7 @@ Before you can create an API key, you must have a valid payment method on file:
 - Keep this key safe. For security reasons, OpenAI will only display the full key once.
 
 <div align="center">
-   <img src="/images/docs/paste_key.png" width="50%">
+   <img src="/assets/docs/paste_key.png" width="50%">
 </div>
 
 ### 5. Create the `.env` File and Copy Over the Org ID and API Key
@@ -82,7 +82,7 @@ OPEN_AI_KEY=***
 ```
 
 <div align="center">
-   <img src="/images/docs/env_file.png" width="50%">
+   <img src="/assets/docs/env_file.png" width="50%">
 </div>
 
 ## Usage
@@ -112,7 +112,7 @@ The script will translate the EPUB file and create a translated version in the d
 <div align="center">
    <br>
 
-  <a href="https://www.youtube.com/watch?v=KOSUYIr-Cfs"><img src="/images/docs/youtube_img.png" width="50%" alt="Tuto on Youtube"></a>
+  <a href="https://www.youtube.com/watch?v=KOSUYIr-Cfs"><img src="/assets/docs/youtube_img.png" width="50%" alt="Tuto on Youtube"></a>
 </div>
 
 ## Notes
