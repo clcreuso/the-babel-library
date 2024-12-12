@@ -16,21 +16,21 @@ const write = () => {
   epub.write();
 };
 
-const translate = () => {
-  epub.on('translated', () => {
-    Logger.info('EPUB - TRANSLATED');
+const summarize = () => {
+  epub.on('summarized', () => {
+    Logger.info('EPUB - summarized');
 
     write();
   });
 
-  epub.translate();
+  epub.summarize();
 };
 
 const parse = () => {
   epub.on('parsed', () => {
     Logger.info('EPUB - PARSED');
 
-    translate();
+    summarize();
   });
 
   epub.parse();
@@ -40,7 +40,7 @@ const init = () => {
   epub.on('initiated', () => {
     Logger.info('EPUB - INITIATED');
 
-    setInterval(() => Logger.info(epub.getStatus()), 5000);
+    setInterval(() => Logger.info(epub.getStatus()), 1000);
 
     parse();
   });

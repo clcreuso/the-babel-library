@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 /* eslint-disable prefer-destructuring */
 /* eslint-disable import/no-extraneous-dependencies */
 
@@ -37,12 +38,29 @@ function cleanHtmlForEpub(html) {
     useShortDoctype: true,
   };
 
-  return minify(html, options);
+  return minify(html, options).then((res) => res.replace(/&(?!amp;)/g, '&amp;'));
 }
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
+
+    this.constants = {
+      tmp: './tmp/epub/',
+      default: './assets/epub/',
+      chapter_folder: './tmp/epub/OPS/',
+      chapter_template: `./tmp/epub/OPS/chapter_template.xhtml`,
+      gitkeep: './tmp/epub/.gitkeep',
+      titlepage: './tmp/epub/titlepage.xhtml',
+      opf: './tmp/epub/content.opf',
+      ncx: './tmp/epub/toc.ncx',
+    };
+
+    this.book = {
+      chapters: [],
+      queries: [],
+      paths: [],
+    };
 
     this.params = {
       user: params.user || 'Default',
@@ -68,24 +86,24 @@ export default class EpubInterface extends EventEmitter {
     return `EPUB (${this.getEpubName()})`;
   }
 
+  getQuery() {
+    return _.find(Object.values(this.book.queries), (query) => !query.finish && !query.waiting);
+  }
+
+  getStatus() {
+    const queries = Object.values(this.book.queries);
+
+    const finisheds = _.filter(queries, (query) => query.finish).length;
+
+    return `${this.getInfos()} - STATUS ${finisheds}/${queries.length}`;
+  }
+
   getTextStats(text) {
     return {
       chars: text.length,
       words: Toolbox.countWords(text),
       sentences: Toolbox.countSentences(text),
     };
-  }
-
-  getFile() {
-    return _.find(Object.values(this.files), (file) => !file.finish && !file.waiting);
-  }
-
-  getStatus() {
-    const files = Object.values(this.files);
-
-    return `${this.getInfos()} - STATUS ${_.filter(files, (file) => file.finish).length}/${
-      files.length
-    }`;
   }
 
   getCover() {
@@ -98,15 +116,6 @@ export default class EpubInterface extends EventEmitter {
         return value.toLowerCase().includes('cover');
       });
     });
-  }
-
-  getFileInfo(path) {
-    const result = _.find(Object.values(this.epub.manifest), (el) => path.includes(el.href));
-
-    return {
-      ...result,
-      filename: result.href.match(/[^/]+$/)[0],
-    };
   }
 
   getEpubName() {
@@ -123,6 +132,32 @@ export default class EpubInterface extends EventEmitter {
     return `./library/${this.getEpubName()}.epub`;
   }
 
+  getTextHTML(path) {
+    let result = '';
+
+    const html = this.readFile(path);
+
+    if (!html.includes('body')) return result;
+
+    for (let index = html.indexOf('body'); index < html.length; index += 1) {
+      if (['<h1', '<h2', '<h3'].includes(html.slice(index, index + 3))) {
+        result += '|TITLE|';
+      }
+
+      if (html[index] === '>') {
+        while (html[index + 1] && html[index + 1] !== '<') {
+          index += 1;
+
+          result += html[index];
+        }
+
+        result += ' ';
+      }
+    }
+
+    return result.replace(/\s+/g, ' ');
+  }
+
   /** **********************************************************************************************
    **                                           Setters                                           **
    ********************************************************************************************** */
@@ -131,6 +166,7 @@ export default class EpubInterface extends EventEmitter {
     this.metadata.cover_id = cover.id;
     this.metadata.cover_name = cover.href.match(/[^/]+$/)[0];
     this.metadata.cover_path = cover.href;
+    this.metadata.cover_type = cover['media-type'];
   }
 
   setFile(path) {
@@ -145,17 +181,20 @@ export default class EpubInterface extends EventEmitter {
    **                                           Helpers                                           **
    ********************************************************************************************** */
 
-  isHTML(path) {
-    return (
-      path.includes('.htm') ||
-      path.includes('.html') ||
-      path.includes('.xhtml') ||
-      path.includes('.xml')
-    );
+  hasFinish() {
+    return Object.values(this.book.queries).every((query) => query.finish);
   }
 
-  hasFinish() {
-    return Object.values(this.files).every((file) => file.finish);
+  hasUselessContent(content) {
+    const stats = this.getTextStats(content);
+
+    if (stats.words > 100) return false;
+
+    if (stats.chars > 1000) return false;
+
+    Logger.warn(`${this.getInfos()} - HAS_USELESS_CONTENT`, { stats });
+
+    return true;
   }
 
   readFile(path) {
@@ -250,8 +289,8 @@ export default class EpubInterface extends EventEmitter {
     ]).join('\n');
   }
 
-  writeOPF(path) {
-    let content = this.readFile(path);
+  writeOPF() {
+    let content = this.readFile(this.constants.opf);
 
     content = content.replace(
       /(<metadata\b[^>]*>)([\s\S]*?)(<\/metadata>)/,
@@ -260,14 +299,36 @@ export default class EpubInterface extends EventEmitter {
 
     content = content.replace(/&(?!amp;)/g, '&amp;');
 
-    this.writeFile(path, content);
+    this.writeFile(this.constants.opf, content);
+  }
+
+  /** **********************************************************************************************
+   **                                        Write: Folder                                        **
+   ********************************************************************************************** */
+
+  initFolderEPUB() {
+    fs.rmSync(this.constants.tmp, { recursive: true, force: true });
+
+    fs.cpSync(this.constants.default, this.constants.tmp, { recursive: true });
+
+    fs.rmSync(this.constants.gitkeep);
+  }
+
+  initBookPaths(dirpath = this.constants.tmp) {
+    fs.readdirSync(dirpath).forEach((filepath) => {
+      const fullpath = `${dirpath}/${filepath}`;
+
+      return fs.statSync(fullpath).isDirectory()
+        ? this.initBookPaths(fullpath)
+        : this.book.paths.push(fullpath);
+    });
   }
 
   /** **********************************************************************************************
    **                                        Write: Cover                                         **
    ********************************************************************************************** */
 
-  async writeCover(path) {
+  async updateCover(path) {
     const image = await loadImage(path);
 
     const canvas = createCanvas(800, 1280);
@@ -301,6 +362,100 @@ export default class EpubInterface extends EventEmitter {
     fs.writeFileSync(path, buffer);
   }
 
+  updateCoverOPF() {
+    let file = this.readFile(this.constants.opf);
+
+    file = file.replace('COVER_PATH', this.metadata.cover_name);
+
+    file = file.replace('COVER_TYPE', this.metadata.cover_type);
+
+    this.writeFile(this.constants.opf, file);
+  }
+
+  updateCoverTitlepage() {
+    let file = this.readFile(this.constants.titlepage);
+
+    file = file.replace('TITLE', this.epub.metadata.title);
+
+    file = file.replace('COVER_PATH', this.metadata.cover_name);
+
+    this.writeFile(this.constants.titlepage, file);
+  }
+
+  async writeCover() {
+    const coverPath = this.file.paths.find((path) => path.endsWith(this.metadata.cover_path));
+
+    this.updateCoverOPF();
+
+    this.updateCoverTitlepage();
+
+    await this.updateCover(coverPath);
+
+    fs.cpSync(coverPath, `${this.constants.tmp}${this.metadata.cover_name}`);
+  }
+
+  /** **********************************************************************************************
+   **                                       Write: Chapters                                       **
+   ********************************************************************************************** */
+
+  writeChapterOPF(index) {
+    let content = this.readFile(this.constants.opf);
+
+    const chapter = `chapter_${index + 1}`;
+
+    const spine = `<itemref idref="${chapter}"/>`;
+    const manifest = `<item id="${chapter}" href="OPS/${chapter}.xhtml" media-type="application/xhtml+xml"/>`;
+
+    content = content.replace(/<\/spine>/, `\t${spine}\n\t</spine>`);
+    content = content.replace(/<\/manifest>/, `\t${manifest}\n\t</manifest>`);
+
+    this.writeFile(this.constants.opf, content);
+  }
+
+  writeChapterNCX(index) {
+    let content = this.readFile(this.constants.ncx);
+
+    const chapter = `chapter_${index + 1}`;
+
+    const data = [
+      `\t<navPoint playOrder="${index + 1}" class="chapter">`,
+      `\t\t<navLabel><text>Chapitre ${index + 1}</text></navLabel>`,
+      `\t\t<content src="OPS/${chapter}.xhtml"/>`,
+      `\t</navPoint>`,
+    ].join('\n');
+
+    content = content.replace(/<\/navMap>/, `${data}\n</navMap>`);
+
+    this.writeFile(this.constants.ncx, content);
+  }
+
+  writeChapters() {
+    this.book.queries.forEach((query, index) => {
+      if (!query.finish || !query.response) return;
+
+      let file = this.readFile(this.constants.chapter_template);
+
+      file = file.replace('TITLE', `Chapitre ${index + 1}`);
+
+      let html = query.response.replace(/\s+/g, ' ').replaceAll('< /', '</');
+
+      html = html.replace(/<br\s*\/?>/gi, '<br />');
+
+      file = file.replace(
+        /<body([^>]*)>([\s\S]*?)<\/body>/i,
+        beautify.html(`<body$1>\n${html}\n</body>`)
+      );
+
+      this.writeFile(`${this.constants.chapter_folder}chapter_${index + 1}.xhtml`, file);
+
+      this.writeChapterOPF(index);
+
+      this.writeChapterNCX(index);
+    });
+
+    fs.rmSync(this.constants.chapter_template);
+  }
+
   /** **********************************************************************************************
    **                                            Write                                            **
    ********************************************************************************************** */
@@ -321,94 +476,34 @@ export default class EpubInterface extends EventEmitter {
       this.emit('writed');
     });
 
-    this.file.paths.forEach((path) => {
+    this.book.paths.forEach((path) => {
       archive.append(fs.readFileSync(path), {
-        name: path.replace(`${this.file.folder}/`, ''),
+        name: path.replace(this.constants.tmp, ''),
       });
     });
 
     archive.finalize();
   }
 
-  getResumeHTML(html, file) {
-    return html.replace(
-      /<body([^>]*)>([\s\S]*?)<\/body>/i,
-      beautify.html(`<body$1>${file.response}</body>`)
-    );
-  }
+  async write() {
+    this.initFolderEPUB();
 
-  // removeElement(html, text) {
-  //   html = html.replace(new RegExp(`<[^>]+>[^<]*${text}"[^<]*<\\/[^>]+>`, 'gi'), '');
+    this.writeOPF();
 
-  //   html = html.replace(new RegExp(`<[^>]+?${text}"[^>]*?\\/?>`, 'gi'), '');
+    this.writeChapters();
 
-  //   html = html.replace(/<([a-zA-Z][^>]*)>\s*<\/\1>/gi, '');
+    await this.writeCover();
 
-  //   html = html.replace(/^\s*[\r\n]/gm, '');
-
-  //   return html;
-  // }
-
-  write() {
-    Object.values(this.files).forEach((file) => {
-      let html = this.readFile(file.path);
-
-      if (html.includes(this.metadata.cover_name)) {
-        this.writeFile(file.path, html);
-
-        Logger.info(`${this.getInfos()} - WRITE_FILE "${file.path}"`);
-      } else {
-        html = this.getResumeHTML(html, file);
-
-        html = html.replace(/<br\s*\/?>/gi, '<br />');
-
-        this.writeFile(file.path, html);
-
-        Logger.info(`${this.getInfos()} - WRITE_FILE "${file.path}"`);
-      }
-      // _.remove(this.file.paths, (item) => item === file.path);
-    });
-
-    // this.file.paths.forEach((path) => {
-    //   if (path.endsWith('.ncx')) {
-    //     let html = this.readFile(path);
-
-    //     html = html.replace(/<navMap>[\s\S]*?<\/navMap>/, '');
-
-    //     html = html.replace(/<pageList>[\s\S]*?<\/pageList>/, '');
-
-    //     html = html.replace(/^\s*[\r\n]/gm, '');
-
-    //     this.writeFile(path, html);
-    //   }
-
-    //   if (path.endsWith('.opf')) {
-    //     let html = this.readFile(path);
-
-    //     Object.values(this.files).forEach((file) => {
-    //       if (file.response) return;
-
-    //       const info = this.getFileInfo(file.path);
-
-    //       html = this.removeElement(html, info.id);
-
-    //       html = this.removeElement(html, info.href);
-
-    //       html = this.removeElement(html, info.filename);
-    //     });
-
-    //     this.writeFile(path, html);
-    //   }
-    // });
+    this.initBookPaths();
 
     this.writeEPUB();
   }
 
   /** **********************************************************************************************
-   **                                     Translate: Request                                      **
+   **                                     Summarize: Request                                      **
    ********************************************************************************************** */
 
-  getRepairJSON(str) {
+  getJSONRepair(str) {
     try {
       let result = str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1);
 
@@ -416,208 +511,189 @@ export default class EpubInterface extends EventEmitter {
 
       return jsonrepair(result);
     } catch (error) {
-      Logger.error(`${this.getInfos()} - GET_REPAIR_JSON`, str, error);
+      Logger.error(`${this.getInfos()} - GET_JSON_REPAIR`, str, error);
 
       return str;
     }
   }
 
-  secureJsonParseJSON(str) {
-    try {
-      return JSON.parse(this.getRepairJSON(str));
-    } catch (error) {
-      Logger.error(`${this.getInfos()} - SECURE_JSON_PARSE_JSON`, str, error);
-
-      return undefined;
-    }
-  }
-
   parseResponseJSON(data) {
+    if (data.length < 100) return undefined;
+
     try {
-      return this.secureJsonParseJSON(data);
-    } catch (error1) {
+      return JSON.parse(this.getJSONRepair(data));
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - PARSE_RESPONSE_JSON`, data, error);
+
       return undefined;
     }
   }
 
-  async parseTranslationRequest(data, file) {
+  async parseSummarizeRequest(data, query) {
     try {
+      query.count += 1;
+
       const response = this.parseResponseJSON(data);
 
-      if (!response.content || response.content === 'undefined') {
-        if (file.count < 1) {
-          file.count += 1;
-
-          Logger.warn(`${this.getInfos()} - PARSE_TRANSLATION_REQUEST`, {
-            path: file.path,
-            count: file.count,
-          });
-        } else {
-          file.finish = true;
-          file.response = '<h1>X</h1>';
-        }
+      if (!response?.content) {
+        query.response = undefined;
+        query.finish = query.count > 2;
       } else {
-        file.response = await cleanHtmlForEpub(response.content)
-          .then((html) => {
-            file.finish = true;
+        query.response = await cleanHtmlForEpub(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - CLEAN_HTML_FOR_EPUB`, err);
 
-            html = html.replace(/&(?!amp;)/g, '&amp;');
+          return undefined;
+        });
 
-            html = html.replace(/<p>/g, '<p style="margin-top: 10px; margin-bottom: 10px;">');
-
-            return html;
-          })
-          .catch((err) => {
-            file.count += 1;
-
-            if (file.count < 3) {
-              file.finish = false;
-              file.response = undefined;
-            } else {
-              file.finish = true;
-              file.response = '<h1>X</h1>';
-            }
-
-            Logger.error(`${this.getInfos()} - CLEAN_HTML_FOR_EPUB`, err);
-          });
+        query.finish = query.response !== undefined || query.count > 2;
       }
     } catch (error) {
-      Logger.error(`${this.getInfos()} - PARSE_TRANSLATION_JSON`, data.choices);
+      Logger.error(`${this.getInfos()} - PARSE_SUMMARIZE_REQUEST`, data.choices);
     }
   }
 
-  sendTranslationRequest(file = this.getFile()) {
-    if (!file) return;
+  sendSummarizeRequest(query = this.getQuery()) {
+    if (!query) return;
 
-    file.waiting = true;
+    query.waiting = true;
 
     sendRequest({
       model: this.params.model,
       language: this.params.language,
       title: this.epub.metadata.title,
       author: this.epub.metadata.creator,
-      content: file.content,
+      content: query.text,
     })
       .then((response) => {
-        this.parseTranslationRequest(response, file);
+        this.parseSummarizeRequest(response, query);
 
         Logger.info(this.getStatus());
       })
       .catch((err) => {
-        file.waiting = false;
-
-        Logger.error(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`, err.response?.data || err);
+        Logger.error(`${this.getInfos()} - SEND_SUMMARIZE_REQUEST`, err.response?.data || err);
       })
       .finally(() => {
-        file.waiting = false;
+        query.waiting = false;
       });
 
-    Logger.info(`${this.getInfos()} - SEND_TRANSLATION_REQUEST`);
+    Logger.info(`${this.getInfos()} - SEND_SUMMARIZE_REQUEST`);
   }
 
   /** **********************************************************************************************
-   **                                          Translate                                          **
+   **                                          Summarize                                          **
    ********************************************************************************************** */
 
-  onTranslateInterval() {
-    this.sendTranslationRequest();
+  onSummarizeInterval() {
+    this.sendSummarizeRequest();
 
     if (!this.hasFinish()) return;
 
-    this.emit('translated');
+    this.emit('summarized');
 
-    this.stopTranslateInterval();
+    this.stopSummarizeInterval();
   }
 
-  stopTranslateInterval() {
+  stopSummarizeInterval() {
     clearInterval(this.timers.queries.id);
 
     this.timers.queries.id = null;
   }
 
-  startTranslateInterval() {
-    this.stopTranslateInterval();
+  summarize() {
+    this.stopSummarizeInterval();
 
-    this.onTranslateInterval();
+    this.onSummarizeInterval();
 
     this.timers.queries.id = setInterval(() => {
-      this.onTranslateInterval();
+      this.onSummarizeInterval();
     }, this.timers.queries.interval);
 
-    Logger.info(`${this.getInfos()} - START_TRANSLATE_INTERVAL`);
-  }
-
-  translate() {
-    this.startTranslateInterval();
-  }
-
-  /** **********************************************************************************************
-   **                                         Parse: HTML                                         **
-   ********************************************************************************************** */
-
-  hasUselessContent(path) {
-    const stats = this.getTextStats(this.files[path].content);
-
-    if (stats.words > 100) return false;
-
-    if (stats.chars > 1500) return false;
-
-    Logger.warn(`${this.getInfos()} - HAS_USELESS_CONTENT`, { path, stats });
-
-    return true;
-  }
-
-  parseHTML(path) {
-    this.files[path] = { path, content: '', response: null, count: 0, finish: false };
-
-    const html = this.readFile(path);
-
-    if (!html.includes('body')) {
-      delete this.files[path];
-
-      return;
-    }
-
-    for (let index = 0; index < html.length; index += 1) {
-      if (html[index] === '>') {
-        while (html[index + 1] && html[index + 1] !== '<') {
-          index += 1;
-
-          this.files[path].content += html[index];
-        }
-      }
-    }
-
-    this.files[path].content = this.files[path].content.replace(/\s+/g, ' ');
-
-    if (this.hasUselessContent(path)) {
-      this.files[path].response = '<h1>X</h1>';
-      this.files[path].finish = true;
-    }
+    Logger.info(`${this.getInfos()} - START_SUMMARIZE_INTERVAL`);
   }
 
   /** **********************************************************************************************
    **                                            Parse                                            **
    ********************************************************************************************** */
 
+  addQuery() {
+    this.book.queries.push({
+      text: '',
+      response: null,
+      count: 0,
+      waiting: false,
+      finish: false,
+    });
+  }
+
+  manageQuery(text, onChapter = false) {
+    const query = this.book.queries[this.book.queries.length - 1];
+
+    const statsText = this.getTextStats(text);
+    const statsQuery = this.getTextStats(query.text);
+
+    if (statsQuery.words < 250) return query;
+
+    if (!onChapter && statsQuery.words < 2500) return query;
+
+    if (statsText.words + statsQuery.words < 5000) return query;
+
+    this.addQuery();
+
+    return this.book.queries[this.book.queries.length - 1];
+  }
+
+  parseQueries() {
+    this.addQuery();
+
+    this.book.chapters.forEach((chapter) => {
+      if (_.isEmpty(chapter.sections)) return;
+
+      let query = this.book.queries[this.book.queries.length - 1];
+
+      if (chapter.sections.length > 1 && !_.isEmpty(query.text)) this.addQuery();
+
+      query = this.manageQuery(chapter.sections.join(''), true);
+
+      chapter.sections.forEach((section) => {
+        query = this.manageQuery(section, true);
+
+        section.split('|TITLE|').forEach((subText) => {
+          query = this.manageQuery(subText);
+
+          query.text += ` ${subText}`;
+
+          query.text = query.text.replace(/\s+/g, ' ');
+
+          query.stats = this.getTextStats(query.text);
+        });
+      });
+    });
+  }
+
   parse() {
     this.files = {};
 
-    this.file.paths.forEach((path) => {
-      if (path.endsWith('.opf')) {
-        this.writeOPF(path);
-      }
+    let chapter = 0;
 
-      if (path.endsWith(this.metadata.cover_path)) {
-        this.writeCover(path);
-      }
+    this.epub.flow.forEach((infos) => {
+      chapter = infos?.order || chapter;
 
-      if (this.isHTML(path)) {
-        this.parseHTML(path);
-      }
+      this.book.chapters[chapter] ||= { chapter, sections: [] };
+
+      this.file.paths.forEach((path) => {
+        if (!path.includes(infos.href)) return;
+
+        const text = this.getTextHTML(path);
+
+        if (this.hasUselessContent(text)) return;
+
+        this.book.chapters[chapter].sections.push(text);
+      });
     });
 
-    this.emit('parsed');
+    this.parseQueries();
+
+    setTimeout(() => this.emit('parsed'), 5000);
   }
 
   /** **********************************************************************************************
@@ -657,7 +733,7 @@ export default class EpubInterface extends EventEmitter {
           { name: 'series_volume', description: 'Book series volume' },
         ],
         (_err, result) => {
-          this.metadata.title = result.title;
+          this.metadata.title = `${result.title} (résumé)`;
           this.metadata.subtitle = `Summarized by ${this.params.model}`;
           this.metadata.creator = result.creator;
           this.metadata.series_name = result.series_name;
