@@ -132,12 +132,18 @@ export default class EpubInterface extends EventEmitter {
     return `./library/${this.getEpubName()}.epub`;
   }
 
-  getTextHTML(path) {
+  getTextHTML(path, infos) {
     let result = '';
 
     const html = this.readFile(path);
 
     if (!html.includes('body')) return result;
+
+    if (html.includes(`epub:type="appendix"`)) {
+      Logger.warn(`${this.getInfos()} - HAS_APPENDIX_CONTENT`, infos.href);
+
+      return result;
+    }
 
     for (let index = html.indexOf('body'); index < html.length; index += 1) {
       if (['<h1', '<h2', '<h3'].includes(html.slice(index, index + 3))) {
@@ -185,14 +191,14 @@ export default class EpubInterface extends EventEmitter {
     return Object.values(this.book.queries).every((query) => query.finish);
   }
 
-  hasUselessContent(content) {
+  hasUselessContent(content, infos) {
     const stats = this.getTextStats(content);
 
     if (stats.words > 100) return false;
 
     if (stats.chars > 1000) return false;
 
-    Logger.warn(`${this.getInfos()} - HAS_USELESS_CONTENT`, { stats });
+    Logger.warn(`${this.getInfos()} - HAS_USELESS_CONTENT`, infos.href, stats);
 
     return true;
   }
@@ -678,17 +684,21 @@ export default class EpubInterface extends EventEmitter {
     this.epub.flow.forEach((infos) => {
       chapter = infos?.order || chapter;
 
-      this.book.chapters[chapter] ||= { chapter, sections: [] };
+      if (infos.href.includes('appen')) {
+        Logger.warn(`${this.getInfos()} - HAS_APPEN_FILE`, infos.href);
+      } else {
+        this.book.chapters[chapter] ||= { chapter, sections: [] };
 
-      this.file.paths.forEach((path) => {
-        if (!path.includes(infos.href)) return;
+        this.file.paths.forEach((path) => {
+          if (!path.includes(infos.href)) return;
 
-        const text = this.getTextHTML(path);
+          const text = this.getTextHTML(path, infos);
 
-        if (this.hasUselessContent(text)) return;
+          if (this.hasUselessContent(text, infos)) return;
 
-        this.book.chapters[chapter].sections.push(text);
-      });
+          this.book.chapters[chapter].sections.push(text);
+        });
+      }
     });
 
     this.parseQueries();
