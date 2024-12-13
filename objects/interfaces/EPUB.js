@@ -231,52 +231,58 @@ export default class EpubInterface extends EventEmitter {
   }
 
   hasContentFile(html) {
+    const upperCaseHTML = html.toUpperCase();
+
     const contentTypes = [
-      'epub:type="bodymatter"',
-      'epub:type="chapter"',
-      'epub:type="conclusion"',
-      'epub:type="epigraph"',
-      'epub:type="introduction"',
-      'epub:type="introduction"',
-      'epub:type="part"',
-      'epub:type="preamble"',
-      'epub:type="volume"',
-      'role="doc-conclusion"',
-      'role="doc-introduction"',
+      'EPUB:TYPE="AFTERWORD"',
+      'EPUB:TYPE="BODYMATTER"',
+      'EPUB:TYPE="CHAPTER"',
+      'EPUB:TYPE="CONCLUSION"',
+      'EPUB:TYPE="EPIGRAPH"',
+      'EPUB:TYPE="INTRODUCTION"',
+      'EPUB:TYPE="PART"',
+      'EPUB:TYPE="PREAMBLE"',
+      'EPUB:TYPE="VOLUME"',
+      'ROLE="DOC-CONCLUSION"',
+      'ROLE="DOC-INTRODUCTION"',
     ];
 
     const nonContentTypes = [
-      'epub:type="acknowledgments"',
-      'epub:type="appendix"',
-      'epub:type="audio"',
-      'epub:type="backmatter"',
-      'epub:type="bibliography"',
-      'epub:type="code"',
-      'epub:type="colophon"',
-      'epub:type="cover"',
-      'epub:type="example"',
-      'epub:type="figure"',
-      'epub:type="foreword"',
-      'epub:type="frontmatter"',
-      'epub:type="glossary"',
-      'epub:type="index"',
-      'epub:type="preface"',
-      'epub:type="qna"',
-      'epub:type="sidebar"',
-      'epub:type="table"',
-      'epub:type="titlepage"',
-      'epub:type="toc"',
-      'epub:type="video"',
+      'TABLE_OF_CONTENTS',
+      'EPUB:TYPE="ACKNOWLEDGMENTS"',
+      'EPUB:TYPE="APPENDIX"',
+      'EPUB:TYPE="AUDIO"',
+      'EPUB:TYPE="BACKMATTER"',
+      'EPUB:TYPE="BIBLIOGRAPHY"',
+      'EPUB:TYPE="CODE"',
+      'EPUB:TYPE="COLOPHON"',
+      'EPUB:TYPE="COVER"',
+      'EPUB:TYPE="COPYRIGHT"',
+      'EPUB:TYPE="COPYRIGHT-PAGE"',
+      'EPUB:TYPE="EXAMPLE"',
+      'EPUB:TYPE="FIGURE"',
+      'EPUB:TYPE="FOREWORD"',
+      'EPUB:TYPE="FRONTMATTER"',
+      'EPUB:TYPE="GLOSSARY"',
+      'EPUB:TYPE="INDEX"',
+      'EPUB:TYPE="PREFACE"',
+      'EPUB:TYPE="QNA"',
+      'EPUB:TYPE="SIDEBAR"',
+      'EPUB:TYPE="TABLE"',
+      'EPUB:TYPE="TITLEPAGE"',
+      'EPUB:TYPE="TOC"',
+      'EPUB:TYPE="VIDEO"',
+      '©',
     ];
 
     for (const type of contentTypes) {
-      if (html.includes(type)) {
+      if (upperCaseHTML.includes(type)) {
         return true;
       }
     }
 
     for (const type of nonContentTypes) {
-      if (html.includes(type)) {
+      if (upperCaseHTML.includes(type)) {
         return false;
       }
     }
@@ -528,6 +534,12 @@ export default class EpubInterface extends EventEmitter {
 
       html = html.replace(/<br\s*\/?>/gi, '<br />');
 
+      html = html.replace(/<h[2-6]/gi, '<h3');
+      html = html.replace(/h[2-6]>/gi, 'h3>');
+
+      html = html.replace(/<h1/gi, '<h2');
+      html = html.replace(/h1>/gi, 'h2>');
+
       file = file.replace(
         /<body([^>]*)>([\s\S]*?)<\/body>/i,
         beautify.html(`<body$1>\n${html}\n</body>`)
@@ -624,9 +636,9 @@ export default class EpubInterface extends EventEmitter {
 
     const ratio = textStats.words / responseStats.words;
 
-    if (ratio < 7.5) {
-      this.database.triggers.min += 100;
-      this.database.triggers.max += 200;
+    if (ratio < 5) {
+      this.database.triggers.min += 50;
+      this.database.triggers.max += 100;
 
       Logger.info(`${this.getInfos()} - UP_TRIGGERS`, {
         ratio,
@@ -634,7 +646,7 @@ export default class EpubInterface extends EventEmitter {
       });
     }
 
-    if (ratio > 12.5) {
+    if (ratio > 15) {
       this.database.triggers.min -= 100;
       this.database.triggers.max -= 200;
 
