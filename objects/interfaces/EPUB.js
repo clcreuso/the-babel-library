@@ -238,6 +238,10 @@ export default class EpubInterface extends EventEmitter {
       'epub:type="volume"',
       'epub:type="epigraph"',
       'epub:type="bodymatter"',
+      'epub:type="conclusion"',
+      'epub:type="introduction"',
+      'role="doc-conclusion"',
+      'role="doc-introduction"',
     ];
 
     const nonContentTypes = [
@@ -252,9 +256,6 @@ export default class EpubInterface extends EventEmitter {
       'epub:type="acknowledgments"',
       'epub:type="cover"',
       'epub:type="titlepage"',
-      'epub:type="note"',
-      'epub:type="footnote"',
-      'epub:type="rearnote"',
       'epub:type="sidebar"',
       'epub:type="qna"',
       'epub:type="frontmatter"',
@@ -267,15 +268,15 @@ export default class EpubInterface extends EventEmitter {
       'epub:type="video"',
     ];
 
-    for (const type of nonContentTypes) {
-      if (html.includes(type)) {
-        return false;
-      }
-    }
-
     for (const type of contentTypes) {
       if (html.includes(type)) {
         return true;
+      }
+    }
+
+    for (const type of nonContentTypes) {
+      if (html.includes(type)) {
+        return false;
       }
     }
 
