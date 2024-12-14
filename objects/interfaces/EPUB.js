@@ -646,7 +646,7 @@ export default class EpubInterface extends EventEmitter {
       });
     }
 
-    if (ratio > 15) {
+    if (ratio > 10) {
       this.database.triggers.min -= 100;
       this.database.triggers.max -= 200;
 
