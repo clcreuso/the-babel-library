@@ -534,11 +534,11 @@ export default class EpubInterface extends EventEmitter {
 
       html = html.replace(/<br\s*\/?>/gi, '<br />');
 
-      html = html.replace(/<h[2-6]/gi, '<h3');
-      html = html.replace(/h[2-6]>/gi, 'h3>');
+      html = html.replace(/<h[1-6]/gi, '<h3');
+      html = html.replace(/h[1-6]>/gi, 'h3>');
 
-      html = html.replace(/<h1/gi, '<h2');
-      html = html.replace(/h1>/gi, 'h2>');
+      html = html.replace(/<h3/i, '<h2');
+      html = html.replace(/h3>/i, 'h2>');
 
       file = file.replace(
         /<body([^>]*)>([\s\S]*?)<\/body>/i,
@@ -637,8 +637,8 @@ export default class EpubInterface extends EventEmitter {
     const ratio = textStats.words / responseStats.words;
 
     if (ratio < 5) {
-      this.database.triggers.min += 50;
-      this.database.triggers.max += 100;
+      this.database.triggers.min += 5;
+      this.database.triggers.max += 10;
 
       Logger.info(`${this.getInfos()} - UP_TRIGGERS`, {
         ratio,
@@ -647,8 +647,8 @@ export default class EpubInterface extends EventEmitter {
     }
 
     if (ratio > 10) {
-      this.database.triggers.min -= 100;
-      this.database.triggers.max -= 200;
+      this.database.triggers.min -= 10;
+      this.database.triggers.max -= 20;
 
       Logger.info(`${this.getInfos()} - DOWN_TRIGGERS`, {
         ratio,
