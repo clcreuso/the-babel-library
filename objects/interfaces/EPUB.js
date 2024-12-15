@@ -70,6 +70,7 @@ export default class EpubInterface extends EventEmitter {
       model: params.model || 'gpt-4o-2024-11-20',
       // model: params.model || 'claude-3-5-sonnet-latest',
       language: params.language || 'French',
+      ratio: params.ratio || 10,
     };
 
     this.metadata = params.metadata || {};
@@ -636,6 +637,12 @@ export default class EpubInterface extends EventEmitter {
 
     const ratio = textStats.words / responseStats.words;
 
+    this.database.history ||= [];
+
+    this.database.history.push({ query: textStats, response: responseStats });
+
+    if (this.database.history.length > 500) this.database.history.shift();
+
     if (ratio < 5) {
       this.database.triggers.min += 5;
       this.database.triggers.max += 10;
@@ -656,7 +663,7 @@ export default class EpubInterface extends EventEmitter {
       });
     }
 
-    this.writeFile(this.constants.database, JSON.stringify(this.database));
+    this.writeFile(this.constants.database, JSON.stringify(this.database, null, 2));
   }
 
   async parseSummarizeRequest(data, query) {
@@ -680,7 +687,7 @@ export default class EpubInterface extends EventEmitter {
         query.finish = query.response !== undefined || query.count > 2;
       }
     } catch (error) {
-      Logger.error(`${this.getInfos()} - PARSE_SUMMARIZE_REQUEST`, data.choices);
+      Logger.error(`${this.getInfos()} - PARSE_SUMMARIZE_REQUEST`, error, data);
     }
   }
 
