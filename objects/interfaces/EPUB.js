@@ -774,13 +774,11 @@ export default class EpubInterface extends EventEmitter {
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsText.words < this.database.triggers.max) {
-      if (statsQuery.words < 250) return query;
+    if (statsQuery.words < 250) return query;
 
-      if (!onChapter && statsQuery.words < this.database.triggers.min) return query;
+    if (!onChapter && statsQuery.words < this.database.triggers.min) return query;
 
-      if (statsText.words + statsQuery.words < this.database.triggers.max) return query;
-    }
+    if (statsText.words + statsQuery.words < this.database.triggers.max) return query;
 
     this.addQuery();
 

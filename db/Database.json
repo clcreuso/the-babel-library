@@ -1,7 +1,7 @@
 {
   "triggers": {
-    "min": 2185,
-    "max": 4370
+    "min": 2045,
+    "max": 4090
   },
   "history": [
     {
@@ -890,6 +890,330 @@
         "chars": 2693,
         "words": 383,
         "sentences": 19
+      }
+    },
+    {
+      "query": {
+        "chars": 29349,
+        "words": 4183,
+        "sentences": 166
+      },
+      "response": {
+        "chars": 3912,
+        "words": 551,
+        "sentences": 27
+      }
+    },
+    {
+      "query": {
+        "chars": 25051,
+        "words": 3621,
+        "sentences": 149
+      },
+      "response": {
+        "chars": 2136,
+        "words": 301,
+        "sentences": 18
+      }
+    },
+    {
+      "query": {
+        "chars": 26154,
+        "words": 3768,
+        "sentences": 143
+      },
+      "response": {
+        "chars": 2393,
+        "words": 339,
+        "sentences": 16
+      }
+    },
+    {
+      "query": {
+        "chars": 21863,
+        "words": 3078,
+        "sentences": 113
+      },
+      "response": {
+        "chars": 3165,
+        "words": 442,
+        "sentences": 23
+      }
+    },
+    {
+      "query": {
+        "chars": 17404,
+        "words": 2517,
+        "sentences": 100
+      },
+      "response": {
+        "chars": 3223,
+        "words": 454,
+        "sentences": 23
+      }
+    },
+    {
+      "query": {
+        "chars": 24011,
+        "words": 3407,
+        "sentences": 132
+      },
+      "response": {
+        "chars": 2765,
+        "words": 357,
+        "sentences": 17
+      }
+    },
+    {
+      "query": {
+        "chars": 17043,
+        "words": 2452,
+        "sentences": 97
+      },
+      "response": {
+        "chars": 2073,
+        "words": 285,
+        "sentences": 14
+      }
+    },
+    {
+      "query": {
+        "chars": 25667,
+        "words": 3734,
+        "sentences": 144
+      },
+      "response": {
+        "chars": 3042,
+        "words": 432,
+        "sentences": 21
+      }
+    },
+    {
+      "query": {
+        "chars": 1793,
+        "words": 261,
+        "sentences": 9
+      },
+      "response": {
+        "chars": 1674,
+        "words": 241,
+        "sentences": 7
+      }
+    },
+    {
+      "query": {
+        "chars": 28637,
+        "words": 4109,
+        "sentences": 162
+      },
+      "response": {
+        "chars": 3041,
+        "words": 421,
+        "sentences": 17
+      }
+    },
+    {
+      "query": {
+        "chars": 31911,
+        "words": 4657,
+        "sentences": 188
+      },
+      "response": {
+        "chars": 2782,
+        "words": 376,
+        "sentences": 19
+      }
+    },
+    {
+      "query": {
+        "chars": 20889,
+        "words": 2980,
+        "sentences": 113
+      },
+      "response": {
+        "chars": 2804,
+        "words": 407,
+        "sentences": 23
+      }
+    },
+    {
+      "query": {
+        "chars": 21393,
+        "words": 3137,
+        "sentences": 131
+      },
+      "response": {
+        "chars": 2468,
+        "words": 351,
+        "sentences": 17
+      }
+    },
+    {
+      "query": {
+        "chars": 27147,
+        "words": 3965,
+        "sentences": 146
+      },
+      "response": {
+        "chars": 2222,
+        "words": 308,
+        "sentences": 18
+      }
+    },
+    {
+      "query": {
+        "chars": 20543,
+        "words": 2874,
+        "sentences": 113
+      },
+      "response": {
+        "chars": 1595,
+        "words": 229,
+        "sentences": 11
+      }
+    },
+    {
+      "query": {
+        "chars": 16981,
+        "words": 2403,
+        "sentences": 96
+      },
+      "response": {
+        "chars": 2632,
+        "words": 367,
+        "sentences": 18
+      }
+    },
+    {
+      "query": {
+        "chars": 22945,
+        "words": 3253,
+        "sentences": 129
+      },
+      "response": {
+        "chars": 2431,
+        "words": 335,
+        "sentences": 16
+      }
+    },
+    {
+      "query": {
+        "chars": 22728,
+        "words": 3208,
+        "sentences": 114
+      },
+      "response": {
+        "chars": 2722,
+        "words": 371,
+        "sentences": 19
+      }
+    },
+    {
+      "query": {
+        "chars": 23554,
+        "words": 3283,
+        "sentences": 117
+      },
+      "response": {
+        "chars": 2268,
+        "words": 311,
+        "sentences": 16
+      }
+    },
+    {
+      "query": {
+        "chars": 12529,
+        "words": 1729,
+        "sentences": 64
+      },
+      "response": {
+        "chars": 2109,
+        "words": 294,
+        "sentences": 13
+      }
+    },
+    {
+      "query": {
+        "chars": 22837,
+        "words": 3269,
+        "sentences": 117
+      },
+      "response": {
+        "chars": 2835,
+        "words": 396,
+        "sentences": 20
+      }
+    },
+    {
+      "query": {
+        "chars": 25988,
+        "words": 3701,
+        "sentences": 129
+      },
+      "response": {
+        "chars": 2737,
+        "words": 382,
+        "sentences": 19
+      }
+    },
+    {
+      "query": {
+        "chars": 6499,
+        "words": 930,
+        "sentences": 38
+      },
+      "response": {
+        "chars": 1529,
+        "words": 213,
+        "sentences": 10
+      }
+    },
+    {
+      "query": {
+        "chars": 26811,
+        "words": 3830,
+        "sentences": 151
+      },
+      "response": {
+        "chars": 4061,
+        "words": 556,
+        "sentences": 24
+      }
+    },
+    {
+      "query": {
+        "chars": 24973,
+        "words": 3625,
+        "sentences": 126
+      },
+      "response": {
+        "chars": 2610,
+        "words": 361,
+        "sentences": 22
+      }
+    },
+    {
+      "query": {
+        "chars": 29438,
+        "words": 4169,
+        "sentences": 147
+      },
+      "response": {
+        "chars": 2376,
+        "words": 320,
+        "sentences": 19
+      }
+    },
+    {
+      "query": {
+        "chars": 15023,
+        "words": 2140,
+        "sentences": 84
+      },
+      "response": {
+        "chars": 2275,
+        "words": 319,
+        "sentences": 21
       }
     }
   ]
