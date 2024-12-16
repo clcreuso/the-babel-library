@@ -213,6 +213,10 @@ export default class EpubInterface extends EventEmitter {
    **                                           Helpers                                           **
    ********************************************************************************************** */
 
+  hasChapters() {
+    return this.epub.flow.some((infos) => _.isNumber(infos?.order));
+  }
+
   hasFinish() {
     return Object.values(this.book.queries).every((query) => query.finish);
   }
@@ -524,12 +528,14 @@ export default class EpubInterface extends EventEmitter {
   }
 
   writeChapters() {
-    this.book.queries.forEach((query, index) => {
+    let chapter = 0;
+
+    this.book.queries.forEach((query) => {
       if (!query.finish || !query.response) return;
 
       let file = this.readFile(this.constants.chapter_template);
 
-      file = file.replace('TITLE', `Chapitre ${index + 1}`);
+      file = file.replace('TITLE', `Chapitre ${chapter + 1}`);
 
       let html = query.response.replace(/\s+/g, ' ').replaceAll('< /', '</');
 
@@ -546,11 +552,13 @@ export default class EpubInterface extends EventEmitter {
         beautify.html(`<body$1>\n${html}\n</body>`)
       );
 
-      this.writeFile(`${this.constants.chapter_folder}chapter_${index + 1}.xhtml`, file);
+      this.writeFile(`${this.constants.chapter_folder}chapter_${chapter + 1}.xhtml`, file);
 
-      this.writeChapterOPF(index);
+      this.writeChapterOPF(chapter);
 
-      this.writeChapterNCX(index);
+      this.writeChapterNCX(chapter);
+
+      chapter += 1;
     });
 
     fs.rmSync(this.constants.chapter_template);
@@ -629,26 +637,24 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  manageDatabaseTriggers(query, response) {
+  manageDatabaseTrigger(query, response) {
     const ratio = query.words / response.words;
 
-    if (ratio < 5 && query.words >= this.database.triggers.max) {
-      this.database.triggers.min += 5;
-      this.database.triggers.max += 10;
+    if (ratio < 5 && query.words >= this.database.trigger) {
+      this.database.trigger += 10;
 
-      Logger.info(`${this.getInfos()} - UP_TRIGGERS`, {
+      Logger.info(`${this.getInfos()} - UP_TRIGGER`, {
         ratio,
-        triggers: this.database.triggers,
+        trigger: this.database.trigger,
       });
     }
 
-    if (ratio > 10 && query.words <= this.database.triggers.max) {
-      this.database.triggers.min -= 10;
-      this.database.triggers.max -= 20;
+    if (ratio > 10 && query.words <= this.database.trigger) {
+      this.database.trigger -= 20;
 
-      Logger.info(`${this.getInfos()} - DOWN_TRIGGERS`, {
+      Logger.info(`${this.getInfos()} - DOWN_TRIGGER`, {
         ratio,
-        triggers: this.database.triggers,
+        trigger: this.database.trigger,
       });
     }
   }
@@ -665,7 +671,7 @@ export default class EpubInterface extends EventEmitter {
 
     if (this.database.history.length > 500) this.database.history.shift();
 
-    this.manageDatabaseTriggers(textStats, responseStats);
+    this.manageDatabaseTrigger(textStats, responseStats);
 
     this.writeFile(this.constants.database, JSON.stringify(this.database, null, 2));
   }
@@ -774,11 +780,11 @@ export default class EpubInterface extends EventEmitter {
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsQuery.words < 250) return query;
+    if (statsQuery.words < this.database.trigger / 5) return query;
 
-    if (!onChapter && statsQuery.words < this.database.triggers.min) return query;
+    if (!onChapter && statsQuery.words < this.database.trigger / 2) return query;
 
-    if (statsText.words + statsQuery.words < this.database.triggers.max) return query;
+    if (statsText.words + statsQuery.words < this.database.trigger) return query;
 
     this.addQuery();
 
@@ -878,8 +884,8 @@ export default class EpubInterface extends EventEmitter {
 
     let chapter = 0;
 
-    this.epub.flow.forEach((infos) => {
-      chapter = infos?.order || chapter;
+    this.epub.flow.forEach((infos, index) => {
+      chapter = this.hasChapters() ? infos?.order || chapter : index;
 
       if (infos.href.includes('appen')) {
         Logger.warn(`${this.getInfos()} - HAS_APPEN_FILE`, infos.href);
@@ -981,12 +987,12 @@ export default class EpubInterface extends EventEmitter {
   initDatabase() {
     this.database = JSON.parse(this.readFile(this.constants.database));
 
-    this.database.triggers ||= { min: 2500, max: 5000 };
+    this.database.trigger ||= 5000;
 
     this.database.history ||= [];
 
     this.database.history.forEach((el) => {
-      this.manageDatabaseTriggers(el.query, el.response);
+      this.manageDatabaseTrigger(el.query, el.response);
     });
 
     Logger.info(`${this.getInfos()} - INIT_DATABASE`);

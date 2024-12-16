@@ -1,8 +1,5 @@
 {
-  "triggers": {
-    "min": 2045,
-    "max": 4090
-  },
+  "trigger": 4090,
   "history": [
     {
       "query": {
