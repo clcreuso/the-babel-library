@@ -665,7 +665,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.database.history.push({ query: textStats, response: responseStats });
 
-    if (this.database.history.length > 500) this.database.history.shift();
+    if (this.database.history.length > 1000) this.database.history.shift();
 
     this.writeFile(this.constants.database, JSON.stringify(this.database, null, 2));
   }
