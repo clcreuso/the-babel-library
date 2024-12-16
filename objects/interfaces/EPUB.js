@@ -640,7 +640,7 @@ export default class EpubInterface extends EventEmitter {
   manageDatabaseTrigger(query, response) {
     const ratio = query.words / response.words;
 
-    if (ratio < 5 && query.words >= this.database.trigger) {
+    if (ratio < 5 && query.words >= this.database.trigger && this.database.trigger <= 5000) {
       this.database.trigger += 10;
 
       Logger.info(`${this.getInfos()} - UP_TRIGGER`, {
@@ -649,7 +649,7 @@ export default class EpubInterface extends EventEmitter {
       });
     }
 
-    if (ratio > 10 && query.words <= this.database.trigger) {
+    if (ratio > 10 && query.words <= this.database.trigger && this.database.trigger >= 2500) {
       this.database.trigger -= 20;
 
       Logger.info(`${this.getInfos()} - DOWN_TRIGGER`, {
