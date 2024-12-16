@@ -642,7 +642,7 @@ export default class EpubInterface extends EventEmitter {
   manageTrigger(query, response) {
     const ratio = query.words / response.words;
 
-    if (ratio < 5 && query.words >= this.trigger && this.trigger <= 5000) {
+    if (ratio < 8 && query.words >= this.trigger && this.trigger <= 6000) {
       this.trigger += 20;
 
       Logger.info(`${this.getInfos()} - UP_TRIGGER`, { ratio, trigger: this.trigger });
