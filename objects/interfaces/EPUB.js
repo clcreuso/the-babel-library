@@ -629,21 +629,10 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  manageDatabaseRatio(query) {
-    if (!query.response) return;
+  manageDatabaseTriggers(query, response) {
+    const ratio = query.words / response.words;
 
-    const textStats = this.getTextStats(query.text);
-    const responseStats = this.getTextStats(this.getTextHTML(query.response));
-
-    const ratio = textStats.words / responseStats.words;
-
-    this.database.history ||= [];
-
-    this.database.history.push({ query: textStats, response: responseStats });
-
-    if (this.database.history.length > 500) this.database.history.shift();
-
-    if (ratio < 5) {
+    if (ratio < 5 && query.words >= this.database.triggers.max) {
       this.database.triggers.min += 5;
       this.database.triggers.max += 10;
 
@@ -653,7 +642,7 @@ export default class EpubInterface extends EventEmitter {
       });
     }
 
-    if (ratio > 10) {
+    if (ratio > 10 && query.words <= this.database.triggers.max) {
       this.database.triggers.min -= 10;
       this.database.triggers.max -= 20;
 
@@ -662,6 +651,21 @@ export default class EpubInterface extends EventEmitter {
         triggers: this.database.triggers,
       });
     }
+  }
+
+  manageDatabaseRatio(query) {
+    if (!query.response) return;
+
+    const textStats = this.getTextStats(query.text);
+    const responseStats = this.getTextStats(this.getTextHTML(query.response));
+
+    this.database.history ||= [];
+
+    this.database.history.push({ query: textStats, response: responseStats });
+
+    if (this.database.history.length > 500) this.database.history.shift();
+
+    this.manageDatabaseTriggers(textStats, responseStats);
 
     this.writeFile(this.constants.database, JSON.stringify(this.database, null, 2));
   }
@@ -770,11 +774,13 @@ export default class EpubInterface extends EventEmitter {
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsQuery.words < 250) return query;
+    if (statsText.words < this.database.triggers.max) {
+      if (statsQuery.words < 250) return query;
 
-    if (!onChapter && statsQuery.words < this.database.triggers.min) return query;
+      if (!onChapter && statsQuery.words < this.database.triggers.min) return query;
 
-    if (statsText.words + statsQuery.words < this.database.triggers.max) return query;
+      if (statsText.words + statsQuery.words < this.database.triggers.max) return query;
+    }
 
     this.addQuery();
 
@@ -978,6 +984,12 @@ export default class EpubInterface extends EventEmitter {
     this.database = JSON.parse(this.readFile(this.constants.database));
 
     this.database.triggers ||= { min: 2500, max: 5000 };
+
+    this.database.history ||= [];
+
+    this.database.history.forEach((el) => {
+      this.manageDatabaseTriggers(el.query, el.response);
+    });
 
     Logger.info(`${this.getInfos()} - INIT_DATABASE`);
   }
