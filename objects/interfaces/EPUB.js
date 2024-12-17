@@ -26,7 +26,7 @@ import Toolbox from '../../config/Toolbox.js';
 dotenv.config();
 
 const OpenAI = new OpenAIApi(
-  new Configuration({ organization: process.env.OPEN_AI_ORG, apiKey: process.env.OPEN_AI_KEY })
+  new Configuration({ organization: process.env.OPENAI_ORG, apiKey: process.env.OPENAI_KEY })
 );
 
 const MAX_TOKENS = 750;
