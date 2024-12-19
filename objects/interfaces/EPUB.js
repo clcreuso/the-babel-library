@@ -8,6 +8,7 @@ import mime from 'mime-types';
 import iso6391 from 'iso-639-1';
 import inquirer from 'inquirer';
 
+import { basename } from 'path';
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
 import { isWithinTokenLimit } from 'gpt-tokenizer';
@@ -115,7 +116,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getEpubPath() {
-    return `./library/${this.getEpubName()}.epub`;
+    return `./library/Translated/${this.getEpubName()}.epub`;
   }
 
   /** **********************************************************************************************
@@ -501,6 +502,8 @@ export default class EpubInterface extends EventEmitter {
 
     output.on('close', () => {
       Logger.info(`${this.getInfos()} - WRITE_EPUB "${this.getEpubPath()}"`);
+
+      fs.cpSync(this.file.path, `./library/Translated/Sources/${basename(this.file.path)}`);
 
       this.emit('writed');
     });
