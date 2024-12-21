@@ -19,6 +19,7 @@ import { EventEmitter } from 'events';
 import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
 
+import { basename } from 'path';
 import Logger from '../../config/logger.js';
 import Toolbox from '../../config/Toolbox.js';
 
@@ -65,14 +66,14 @@ export default class EpubInterface extends EventEmitter {
       paths: [],
     };
 
-    this.trigger = 4000;
+    this.trigger = 3000;
 
     this.params = {
       user: params.user || 'Default',
       model: params.model || 'gpt-4o-2024-11-20',
       // model: params.model || 'claude-3-5-sonnet-latest',
       language: params.language || 'French',
-      ratio: params.ratio || 10,
+      ratio: params.ratio || 6,
     };
 
     this.metadata = params.metadata || {};
@@ -135,7 +136,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getEpubPath() {
-    return `./library/${this.getEpubName()}.epub`;
+    return `./library/Summarized/${this.getEpubName()}.epub`;
   }
 
   hasTitleHTML(html, index) {
@@ -583,6 +584,8 @@ export default class EpubInterface extends EventEmitter {
     output.on('close', () => {
       Logger.info(`${this.getInfos()} - WRITE_EPUB "${this.getEpubPath()}"`);
 
+      fs.cpSync(this.file.path, `./library/Summarized/Sources/${basename(this.file.path)}`);
+
       this.emit('writed');
     });
 
@@ -642,13 +645,13 @@ export default class EpubInterface extends EventEmitter {
   manageTrigger(query, response) {
     const ratio = query.words / response.words;
 
-    if (ratio < 8 && query.words >= this.trigger && this.trigger <= 6000) {
+    if (ratio < this.params.ratio - 1 && query.words >= this.trigger && this.trigger <= 4000) {
       this.trigger += 20;
 
       Logger.info(`${this.getInfos()} - UP_TRIGGER`, { ratio, trigger: this.trigger });
     }
 
-    if (ratio > 10 && query.words <= this.trigger && this.trigger >= 3000) {
+    if (ratio < this.params.ratio + 1 && query.words <= this.trigger && this.trigger >= 2000) {
       this.trigger -= 20;
 
       Logger.info(`${this.getInfos()} - DOWN_TRIGGER`, { ratio, trigger: this.trigger });
