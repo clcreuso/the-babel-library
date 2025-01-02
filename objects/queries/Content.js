@@ -2,16 +2,16 @@
 export default (data) => {
   if (data.language === 'French')
     return [
-      `Objectif : Créer un résumé clair en français, au format HTML.`,
+      `Objectif : Créer un résumé clair en français, au format HTML`,
+      `Le contenu provient de la section d'un livre`,
       `Conditions :`,
       `- Pas d'introduction et Conclusion. Uniquement titre -> paragraphe, titre -> paragraphe...`,
+      `- Résume pour comprendre en PROFONDEUR la section du livre`,
       `Exigences :`,
-      `- Utiliser des balises HTML (<h>, <p>, <b>, <i>, <br>) sans \n.`,
+      `- Utiliser des balises HTML (pas de \n)`,
       `Réponse attendue (en JSON) :`,
-      `{`,
-      `     "content": "HTML CONTENT"`,
-      `}`,
-      `Contenu a résumer`,
+      `{ "content": "HTML CONTENT" }`,
+      `Contenu:`,
       data.content,
     ].join('\n');
 

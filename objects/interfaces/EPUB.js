@@ -79,7 +79,7 @@ export default class EpubInterface extends EventEmitter {
     this.metadata = params.metadata || {};
 
     this.timers = {
-      queries: { id: null, interval: 500 },
+      queries: { id: null, interval: 20000 },
     };
 
     this.setFile(params.path);
@@ -251,12 +251,14 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="PART"',
       'EPUB:TYPE="PREAMBLE"',
       'EPUB:TYPE="VOLUME"',
+      'ROLE="DOC-CHAPTER"',
       'ROLE="DOC-CONCLUSION"',
       'ROLE="DOC-INTRODUCTION"',
+      'ROLE="DOC-PART"',
     ];
 
     const nonContentTypes = [
-      'TABLE_OF_CONTENTS',
+      '©',
       'EPUB:TYPE="ACKNOWLEDGMENTS"',
       'EPUB:TYPE="APPENDIX"',
       'EPUB:TYPE="AUDIO"',
@@ -264,9 +266,9 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="BIBLIOGRAPHY"',
       'EPUB:TYPE="CODE"',
       'EPUB:TYPE="COLOPHON"',
-      'EPUB:TYPE="COVER"',
-      'EPUB:TYPE="COPYRIGHT"',
       'EPUB:TYPE="COPYRIGHT-PAGE"',
+      'EPUB:TYPE="COPYRIGHT"',
+      'EPUB:TYPE="COVER"',
       'EPUB:TYPE="EXAMPLE"',
       'EPUB:TYPE="FIGURE"',
       'EPUB:TYPE="FOREWORD"',
@@ -280,7 +282,15 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="TITLEPAGE"',
       'EPUB:TYPE="TOC"',
       'EPUB:TYPE="VIDEO"',
-      '©',
+      'ROLE="DOC-ACKNOWLEDGMENTS"',
+      'ROLE="DOC-COVER"',
+      'ROLE="DOC-DEDICATION"',
+      'ROLE="DOC-ENDNOTES"',
+      'ROLE="DOC-GLOSSARY"',
+      'ROLE="DOC-INDEX"',
+      'ROLE="DOC-PAGELIST"',
+      'ROLE="DOC-TOC"',
+      'TABLE_OF_CONTENTS',
     ];
 
     for (const type of contentTypes) {
