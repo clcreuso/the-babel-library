@@ -77,8 +77,8 @@ Before you can create an API key, you must have a valid payment method on file:
 In the root of your project, create a file named `.env`. Add the following lines, replacing `***` with your actual information:
 
 ```env
-OPEN_AI_ORG=***
-OPEN_AI_KEY=***
+OPENAI_ORG=***
+OPENAI_KEY=***
 ```
 
 <div align="center">
