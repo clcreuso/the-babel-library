@@ -39,7 +39,26 @@ function cleanHtmlForEpub(html) {
     useShortDoctype: true,
   };
 
-  return minify(html, options).then((res) => res.replace(/&(?!amp;)/g, '&amp;'));
+  return minify(html, options).then((res) => {
+    res = res.replace(/&(?!amp;)/g, '&amp;');
+
+    res = res.replaceAll('< /', '</');
+
+    res = res.replace(/\s+/g, ' ');
+
+    res = res.replace(/<br\s*\/?>/gi, '<br />');
+
+    res = res.replace(/<h>/gi, '<h3>');
+    res = res.replace(/<\/h>/gi, '</h3>');
+
+    res = res.replace(/<h[1-6]/gi, '<h3');
+    res = res.replace(/h[1-6]>/gi, 'h3>');
+
+    res = res.replace(/<h3/i, '<h2');
+    res = res.replace(/h3>/i, 'h2>');
+
+    return res;
+  });
 }
 
 export default class EpubInterface extends EventEmitter {
@@ -49,7 +68,9 @@ export default class EpubInterface extends EventEmitter {
     this.constants = {
       tmp: './tmp/epub/',
       default: './assets/epub/',
-      chapter_folder: './tmp/epub/OPS/',
+      html_folder: './tmp/epub/OPS/',
+      conclusion: `./tmp/epub/OPS/conclusion.xhtml`,
+      introduction: `./tmp/epub/OPS/introduction.xhtml`,
       chapter_template: `./tmp/epub/OPS/chapter_template.xhtml`,
       titlepage: './tmp/epub/titlepage.xhtml',
       database: './db/Database.json',
@@ -57,6 +78,9 @@ export default class EpubInterface extends EventEmitter {
       opf: './tmp/epub/content.opf',
       ncx: './tmp/epub/toc.ncx',
     };
+
+    this.conclusion = { response: undefined, count: 0, finish: false };
+    this.introduction = { response: undefined, count: 0, finish: false };
 
     this.database = {};
 
@@ -79,7 +103,7 @@ export default class EpubInterface extends EventEmitter {
     this.metadata = params.metadata || {};
 
     this.timers = {
-      queries: { id: null, interval: 20000 },
+      queries: { id: null, interval: 5000 },
     };
 
     this.setFile(params.path);
@@ -245,15 +269,11 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="AFTERWORD"',
       'EPUB:TYPE="BODYMATTER"',
       'EPUB:TYPE="CHAPTER"',
-      'EPUB:TYPE="CONCLUSION"',
       'EPUB:TYPE="EPIGRAPH"',
-      'EPUB:TYPE="INTRODUCTION"',
       'EPUB:TYPE="PART"',
       'EPUB:TYPE="PREAMBLE"',
       'EPUB:TYPE="VOLUME"',
       'ROLE="DOC-CHAPTER"',
-      'ROLE="DOC-CONCLUSION"',
-      'ROLE="DOC-INTRODUCTION"',
       'ROLE="DOC-PART"',
     ];
 
@@ -266,6 +286,7 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="BIBLIOGRAPHY"',
       'EPUB:TYPE="CODE"',
       'EPUB:TYPE="COLOPHON"',
+      'EPUB:TYPE="CONCLUSION"',
       'EPUB:TYPE="COPYRIGHT-PAGE"',
       'EPUB:TYPE="COPYRIGHT"',
       'EPUB:TYPE="COVER"',
@@ -275,6 +296,7 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="FRONTMATTER"',
       'EPUB:TYPE="GLOSSARY"',
       'EPUB:TYPE="INDEX"',
+      'EPUB:TYPE="INTRODUCTION"',
       'EPUB:TYPE="PREFACE"',
       'EPUB:TYPE="QNA"',
       'EPUB:TYPE="SIDEBAR"',
@@ -283,11 +305,13 @@ export default class EpubInterface extends EventEmitter {
       'EPUB:TYPE="TOC"',
       'EPUB:TYPE="VIDEO"',
       'ROLE="DOC-ACKNOWLEDGMENTS"',
+      'ROLE="DOC-CONCLUSION"',
       'ROLE="DOC-COVER"',
       'ROLE="DOC-DEDICATION"',
       'ROLE="DOC-ENDNOTES"',
       'ROLE="DOC-GLOSSARY"',
       'ROLE="DOC-INDEX"',
+      'ROLE="DOC-INTRODUCTION"',
       'ROLE="DOC-PAGELIST"',
       'ROLE="DOC-TOC"',
       'TABLE_OF_CONTENTS',
@@ -509,13 +533,11 @@ export default class EpubInterface extends EventEmitter {
    **                                       Write: Chapters                                       **
    ********************************************************************************************** */
 
-  writeChapterOPF(index) {
+  writeFileInOPF(id) {
     let content = this.readFile(this.constants.opf);
 
-    const chapter = `chapter_${index + 1}`;
-
-    const spine = `<itemref idref="${chapter}"/>`;
-    const manifest = `<item id="${chapter}" href="OPS/${chapter}.xhtml" media-type="application/xhtml+xml"/>`;
+    const spine = `<itemref idref="${id}"/>`;
+    const manifest = `<item id="${id}" href="OPS/${id}.xhtml" media-type="application/xhtml+xml"/>`;
 
     content = content.replace(/<\/spine>/, `\t${spine}\n\t</spine>`);
     content = content.replace(/<\/manifest>/, `\t${manifest}\n\t</manifest>`);
@@ -523,56 +545,77 @@ export default class EpubInterface extends EventEmitter {
     this.writeFile(this.constants.opf, content);
   }
 
-  writeChapterNCX(index) {
+  writeFileInNCX(order, type = 'chapter') {
     let content = this.readFile(this.constants.ncx);
 
-    const chapter = `chapter_${index + 1}`;
+    if (type === 'chapter') {
+      content = content.replace(
+        /<\/navMap>/,
+        `${[
+          `\t<navPoint playOrder="${order + 1}" class="chapter">`,
+          `\t\t<navLabel><text>Chapitre ${order}</text></navLabel>`,
+          `\t\t<content src="OPS/chapter_${order}.xhtml"/>`,
+          `\t</navPoint>`,
+        ].join('\n')}\n</navMap>`
+      );
+    }
 
-    const data = [
-      `\t<navPoint playOrder="${index + 1}" class="chapter">`,
-      `\t\t<navLabel><text>Chapitre ${index + 1}</text></navLabel>`,
-      `\t\t<content src="OPS/${chapter}.xhtml"/>`,
-      `\t</navPoint>`,
-    ].join('\n');
+    if (type === 'introduction') {
+      content = content.replace(
+        /<\/navMap>/,
+        `${[
+          `\t<navPoint playOrder="${order}" class="introduction">`,
+          `\t\t<navLabel><text>Introduction</text></navLabel>`,
+          `\t\t<content src="OPS/introduction.xhtml"/>`,
+          `\t</navPoint>`,
+        ].join('\n')}\n</navMap>`
+      );
+    }
 
-    content = content.replace(/<\/navMap>/, `${data}\n</navMap>`);
+    if (type === 'conclusion') {
+      content = content.replace(
+        /<\/navMap>/,
+        `${[
+          `\t<navPoint playOrder="${order}" class="conclusion">`,
+          `\t\t<navLabel><text>Conclusion</text></navLabel>`,
+          `\t\t<content src="OPS/conclusion.xhtml"/>`,
+          `\t</navPoint>`,
+        ].join('\n')}\n</navMap>`
+      );
+    }
 
     this.writeFile(this.constants.ncx, content);
   }
 
   writeChapters() {
-    let chapter = 0;
+    let chapter = 1;
+
+    this.writeIntroduction(chapter);
 
     this.book.queries.forEach((query) => {
       if (!query.finish || !query.response) return;
 
       let file = this.readFile(this.constants.chapter_template);
 
-      file = file.replace('TITLE', `Chapitre ${chapter + 1}`);
-
-      let html = query.response.replace(/\s+/g, ' ').replaceAll('< /', '</');
-
-      html = html.replace(/<br\s*\/?>/gi, '<br />');
-
-      html = html.replace(/<h[1-6]/gi, '<h3');
-      html = html.replace(/h[1-6]>/gi, 'h3>');
-
-      html = html.replace(/<h3/i, '<h2');
-      html = html.replace(/h3>/i, 'h2>');
+      file = file.replace('TITLE', `Chapitre ${chapter}`);
 
       file = file.replace(
         /<body([^>]*)>([\s\S]*?)<\/body>/i,
-        beautify.html(`<body$1>\n${html}\n</body>`)
+        beautify.html(`<body$1>\n${query.response}\n</body>`)
       );
 
-      this.writeFile(`${this.constants.chapter_folder}chapter_${chapter + 1}.xhtml`, file);
+      file = file.replace(/(\s*\n\s*)+/g, '\n');
 
-      this.writeChapterOPF(chapter);
+      this.writeFile(`${this.constants.html_folder}chapter_${chapter}.xhtml`, file);
 
-      this.writeChapterNCX(chapter);
+      this.writeFileInOPF(`chapter_${chapter}`);
+
+      this.writeFileInNCX(chapter);
 
       chapter += 1;
     });
+
+    this.writeConclusion(chapter);
 
     fs.rmSync(this.constants.chapter_template);
   }
@@ -606,6 +649,44 @@ export default class EpubInterface extends EventEmitter {
     });
 
     archive.finalize();
+  }
+
+  writeIntroduction(chapter) {
+    if (!this.introduction.finish || !this.introduction.response) return;
+
+    let file = this.readFile(this.constants.introduction);
+
+    file = file.replace(
+      /<body([^>]*)>([\s\S]*?)<\/body>/i,
+      beautify.html(`<body$1>\n${this.introduction.response}\n</body>`)
+    );
+
+    file = file.replace(/(\s*\n\s*)+/g, '\n');
+
+    this.writeFile(`${this.constants.html_folder}introduction.xhtml`, file);
+
+    this.writeFileInOPF('introduction');
+
+    this.writeFileInNCX(chapter, 'introduction');
+  }
+
+  writeConclusion(chapter) {
+    if (!this.conclusion.finish || !this.conclusion.response) return;
+
+    let file = this.readFile(this.constants.conclusion);
+
+    file = file.replace(
+      /<body([^>]*)>([\s\S]*?)<\/body>/i,
+      beautify.html(`<body$1>\n${this.conclusion.response}\n</body>`)
+    );
+
+    file = file.replace(/(\s*\n\s*)+/g, '\n');
+
+    this.writeFile(`${this.constants.html_folder}conclusion.xhtml`, file);
+
+    this.writeFileInOPF('conclusion');
+
+    this.writeFileInNCX(chapter + 1, 'conclusion');
   }
 
   async write() {
@@ -714,6 +795,7 @@ export default class EpubInterface extends EventEmitter {
     query.waiting = true;
 
     sendRequest({
+      type: 'chapter',
       model: this.params.model,
       language: this.params.language,
       title: this.epub.metadata.title,
@@ -736,17 +818,189 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
+   **                                         Introduction                                        **
+   ********************************************************************************************** */
+
+  hasIntroductionHTML(html) {
+    if (!html.includes('body')) return false;
+
+    if (html.toUpperCase().includes('<TITLE>INTRODUCTION</TITLE>')) return true;
+
+    if (html.toUpperCase().includes('ROLE="DOC-INTRODUCTION"')) return true;
+
+    if (html.toUpperCase().includes('EPUB:TYPE="INTRODUCTION"')) return true;
+
+    return false;
+  }
+
+  getIntroductionContent() {
+    let text = '';
+
+    this.epub.flow.forEach((infos) => {
+      this.file.paths.forEach((path) => {
+        if (!path.includes(infos.href)) return;
+
+        const html = this.readFile(path);
+
+        if (!this.hasIntroductionHTML(html)) return;
+
+        text += this.getTextHTML(html);
+      });
+    });
+
+    return text;
+  }
+
+  async parseIntroductionRequest(data) {
+    try {
+      this.introduction.count += 1;
+
+      const response = this.parseResponseJSON(data);
+
+      if (!response?.content) {
+        this.introduction.response = undefined;
+        this.introduction.finish = this.introduction.count > 2;
+
+        Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, response);
+      } else {
+        this.introduction.response = await cleanHtmlForEpub(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST_HTML`, err);
+
+          return undefined;
+        });
+
+        this.introduction.finish =
+          this.introduction.response !== undefined || this.introduction.count > 2;
+
+        Logger.info(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`);
+      }
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, error, data);
+    }
+  }
+
+  sendIntroductionRequest() {
+    const content = this.getIntroductionContent();
+
+    Logger.info(`${this.getInfos()} - SEND_INTRODUCTION_REQUEST`);
+
+    sendRequest({
+      type: 'introduction',
+      model: this.params.model,
+      language: this.params.language,
+      title: this.epub.metadata.title,
+      author: this.epub.metadata.creator,
+      content,
+    })
+      .then((response) => {
+        this.parseIntroductionRequest(response);
+      })
+      .catch((err) => {
+        Logger.error(`${this.getInfos()} - SEND_INTRODUCTION_REQUEST`, err.response?.data || err);
+      });
+  }
+
+  /** **********************************************************************************************
+   **                                         Conclusion                                        **
+   ********************************************************************************************** */
+
+  hasConclusionHTML(html) {
+    if (!html.includes('body')) return false;
+
+    if (html.toUpperCase().includes('<TITLE>CONCLUSION</TITLE>')) return true;
+
+    if (html.toUpperCase().includes('ROLE="DOC-CONCLUSION"')) return true;
+
+    if (html.toUpperCase().includes('EPUB:TYPE="CONCLUSION"')) return true;
+
+    return false;
+  }
+
+  getConclusionContent() {
+    let text = '';
+
+    this.epub.flow.forEach((infos) => {
+      this.file.paths.forEach((path) => {
+        if (!path.includes(infos.href)) return;
+
+        const html = this.readFile(path);
+
+        if (!this.hasConclusionHTML(html)) return;
+
+        text += this.getTextHTML(html);
+      });
+    });
+
+    return text;
+  }
+
+  async parseConclusionRequest(data) {
+    try {
+      this.conclusion.count += 1;
+
+      const response = this.parseResponseJSON(data);
+
+      if (!response?.content) {
+        this.conclusion.response = undefined;
+        this.conclusion.finish = this.conclusion.count > 2;
+
+        Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, response);
+      } else {
+        this.conclusion.response = await cleanHtmlForEpub(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST_HTML`, err);
+
+          return undefined;
+        });
+
+        this.conclusion.finish =
+          this.conclusion.response !== undefined || this.conclusion.count > 2;
+
+        Logger.info(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`);
+      }
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, error, data);
+    }
+  }
+
+  sendConclusionRequest() {
+    const content = this.getConclusionContent();
+
+    Logger.info(`${this.getInfos()} - SEND_CONCLUSION_REQUEST`);
+
+    sendRequest({
+      type: 'conclusion',
+      model: this.params.model,
+      language: this.params.language,
+      title: this.epub.metadata.title,
+      author: this.epub.metadata.creator,
+      content,
+    })
+      .then((response) => {
+        this.parseConclusionRequest(response);
+      })
+      .catch((err) => {
+        Logger.error(`${this.getInfos()} - SEND_CONCLUSION_REQUEST`, err.response?.data || err);
+      });
+  }
+
+  /** **********************************************************************************************
    **                                          Summarize                                          **
    ********************************************************************************************** */
 
   onSummarizeInterval() {
-    this.sendSummarizeRequest();
+    if (!this.introduction.finish) {
+      this.sendIntroductionRequest();
+    } else if (!this.conclusion.finish) {
+      this.sendConclusionRequest();
+    } else {
+      this.sendSummarizeRequest();
 
-    if (!this.hasFinish()) return;
+      if (!this.hasFinish()) return;
 
-    this.emit('summarized');
+      this.emit('summarized');
 
-    this.stopSummarizeInterval();
+      this.stopSummarizeInterval();
+    }
   }
 
   stopSummarizeInterval() {
@@ -859,20 +1113,18 @@ export default class EpubInterface extends EventEmitter {
     this.tags = {};
 
     this.epub.flow.forEach((infos) => {
-      if (!infos.href.includes('appen')) {
-        this.file.paths.forEach((path) => {
-          if (!path.includes(infos.href)) return;
+      this.file.paths.forEach((path) => {
+        if (!path.includes(infos.href)) return;
 
-          const tags = this.parseTagsHTML(path);
+        const tags = this.parseTagsHTML(path);
 
-          Object.entries(tags).forEach(([tag, value]) => {
-            if (value <= 1) return;
+        Object.entries(tags).forEach(([tag, value]) => {
+          if (value <= 1) return;
 
-            this.tags[tag] ||= 0;
-            this.tags[tag] += value;
-          });
+          this.tags[tag] ||= 0;
+          this.tags[tag] += value;
         });
-      }
+      });
     });
 
     Object.entries(this.tags).forEach(([tag, value]) => {
@@ -894,21 +1146,17 @@ export default class EpubInterface extends EventEmitter {
     this.epub.flow.forEach((infos, index) => {
       chapter = this.hasChapters() ? infos?.order || chapter : index;
 
-      if (infos.href.includes('appen')) {
-        Logger.warn(`${this.getInfos()} - HAS_APPEN_FILE`, infos.href);
-      } else {
-        this.book.chapters[chapter] ||= { chapter, sections: [] };
+      this.book.chapters[chapter] ||= { chapter, sections: [] };
 
-        this.file.paths.forEach((path) => {
-          if (!path.includes(infos.href)) return;
+      this.file.paths.forEach((path) => {
+        if (!path.includes(infos.href)) return;
 
-          const text = this.parseTextHTML(path, infos, true);
+        const text = this.parseTextHTML(path, infos, true);
 
-          if (this.hasUselessContent(text, infos)) return;
+        if (this.hasUselessContent(text, infos)) return;
 
-          this.book.chapters[chapter].sections.push(text);
-        });
-      }
+        this.book.chapters[chapter].sections.push(text);
+      });
     });
 
     this.parseQueries();
