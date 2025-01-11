@@ -295,27 +295,42 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getContentType(html, path) {
-    if (this.hasContentShort(html)) return 'USELESS';
+    const result = { value: 'CHAPTER', num: 0 };
 
-    if (this.getContentLevel1(html, CONSTANTS.L1.TOC)) return 'TOC';
-    if (this.getContentLevel1(html, CONSTANTS.L1.CONCLUSION)) return 'CONCLUSION';
-    if (this.getContentLevel1(html, CONSTANTS.L1.INTRODUCTION)) return 'INTRODUCTION';
-    if (this.getContentLevel1(html, CONSTANTS.L1.USELESS) || html.includes('©')) return 'USELESS';
-    if (this.getContentLevel1(html, CONSTANTS.L1.CHAPTER)) return 'CHAPTER';
+    const types = { CHAPTER: 0, CONCLUSION: 0, INTRODUCTION: 0, TOC: 0, USELESS: 0 };
 
-    if (this.getContentPath(path, CONSTANTS.PATH.TOC)) return 'TOC';
-    if (this.getContentPath(path, CONSTANTS.PATH.CONCLUSION)) return 'CONCLUSION';
-    if (this.getContentPath(path, CONSTANTS.PATH.INTRODUCTION)) return 'INTRODUCTION';
-    if (this.getContentPath(path, CONSTANTS.PATH.USELESS)) return 'USELESS';
-    if (this.getContentPath(path, CONSTANTS.PATH.CHAPTER)) return 'CHAPTER';
+    if (html.includes('©')) types.USELESS += 5;
 
-    if (this.getContentLevel2(html, CONSTANTS.L2.TOC)) return 'TOC';
-    if (this.getContentLevel2(html, CONSTANTS.L2.CONCLUSION)) return 'CONCLUSION';
-    if (this.getContentLevel2(html, CONSTANTS.L2.INTRODUCTION)) return 'INTRODUCTION';
-    if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) return 'USELESS';
-    if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) return 'CHAPTER';
+    if (this.hasContentShort(html)) types.USELESS += 5;
 
-    return 'CHAPTER';
+    if (this.getContentLevel1(html, CONSTANTS.L1.TOC)) types.TOC += 3;
+    if (this.getContentLevel1(html, CONSTANTS.L1.CONCLUSION)) types.CONCLUSION += 3;
+    if (this.getContentLevel1(html, CONSTANTS.L1.INTRODUCTION)) types.INTRODUCTION += 3;
+    if (this.getContentLevel1(html, CONSTANTS.L1.USELESS)) types.USELESS += 3;
+    if (this.getContentLevel1(html, CONSTANTS.L1.CHAPTER)) types.CHAPTER += 3;
+
+    if (this.getContentPath(path, CONSTANTS.PATH.TOC)) types.TOC += 2;
+    if (this.getContentPath(path, CONSTANTS.PATH.CONCLUSION)) types.CONCLUSION += 2;
+    if (this.getContentPath(path, CONSTANTS.PATH.INTRODUCTION)) types.INTRODUCTION += 2;
+    if (this.getContentPath(path, CONSTANTS.PATH.USELESS)) types.USELESS += 2;
+    if (this.getContentPath(path, CONSTANTS.PATH.CHAPTER)) types.CHAPTER += 2;
+
+    if (this.getContentLevel2(html, CONSTANTS.L2.TOC)) types.TOC += 1;
+    if (this.getContentLevel2(html, CONSTANTS.L2.CONCLUSION)) types.CONCLUSION += 1;
+    if (this.getContentLevel2(html, CONSTANTS.L2.INTRODUCTION)) types.INTRODUCTION += 1;
+    if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) types.USELESS += 1;
+    if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) types.CHAPTER += 1;
+
+    ['TOC', 'CONCLUSION', 'INTRODUCTION', 'USELESS', 'CHAPTER'].forEach((type) => {
+      if (result.num >= types[type]) return;
+
+      result.value = type;
+      result.num = types[type];
+    });
+
+    console.log(types, path);
+
+    return result.value;
   }
 
   readFile(path) {
