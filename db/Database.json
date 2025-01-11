@@ -10499,6 +10499,258 @@
         "words": 390,
         "sentences": 17
       }
+    },
+    {
+      "query": {
+        "chars": 3970,
+        "words": 672,
+        "sentences": 36
+      },
+      "response": {
+        "chars": 2035,
+        "words": 314,
+        "sentences": 18
+      }
+    },
+    {
+      "query": {
+        "chars": 10461,
+        "words": 1787,
+        "sentences": 96
+      },
+      "response": {
+        "chars": 3976,
+        "words": 574,
+        "sentences": 29
+      }
+    },
+    {
+      "query": {
+        "chars": 5977,
+        "words": 1003,
+        "sentences": 52
+      },
+      "response": {
+        "chars": 3275,
+        "words": 495,
+        "sentences": 26
+      }
+    },
+    {
+      "query": {
+        "chars": 9797,
+        "words": 1674,
+        "sentences": 98
+      },
+      "response": {
+        "chars": 3177,
+        "words": 467,
+        "sentences": 29
+      }
+    },
+    {
+      "query": {
+        "chars": 10392,
+        "words": 1815,
+        "sentences": 98
+      },
+      "response": {
+        "chars": 3109,
+        "words": 468,
+        "sentences": 25
+      }
+    },
+    {
+      "query": {
+        "chars": 10738,
+        "words": 1966,
+        "sentences": 114
+      },
+      "response": {
+        "chars": 2913,
+        "words": 431,
+        "sentences": 26
+      }
+    },
+    {
+      "query": {
+        "chars": 11014,
+        "words": 1928,
+        "sentences": 106
+      },
+      "response": {
+        "chars": 2469,
+        "words": 358,
+        "sentences": 23
+      }
+    },
+    {
+      "query": {
+        "chars": 9034,
+        "words": 1583,
+        "sentences": 84
+      },
+      "response": {
+        "chars": 3287,
+        "words": 482,
+        "sentences": 31
+      }
+    },
+    {
+      "query": {
+        "chars": 3478,
+        "words": 588,
+        "sentences": 40
+      },
+      "response": {
+        "chars": 2477,
+        "words": 373,
+        "sentences": 22
+      }
+    },
+    {
+      "query": {
+        "chars": 3596,
+        "words": 573,
+        "sentences": 43
+      },
+      "response": {
+        "chars": 2958,
+        "words": 433,
+        "sentences": 26
+      }
+    },
+    {
+      "query": {
+        "chars": 9409,
+        "words": 1601,
+        "sentences": 82
+      },
+      "response": {
+        "chars": 3778,
+        "words": 543,
+        "sentences": 27
+      }
+    },
+    {
+      "query": {
+        "chars": 9060,
+        "words": 1603,
+        "sentences": 103
+      },
+      "response": {
+        "chars": 4036,
+        "words": 593,
+        "sentences": 30
+      }
+    },
+    {
+      "query": {
+        "chars": 7086,
+        "words": 1182,
+        "sentences": 66
+      },
+      "response": {
+        "chars": 3044,
+        "words": 440,
+        "sentences": 20
+      }
+    },
+    {
+      "query": {
+        "chars": 11199,
+        "words": 1959,
+        "sentences": 104
+      },
+      "response": {
+        "chars": 2969,
+        "words": 437,
+        "sentences": 24
+      }
+    },
+    {
+      "query": {
+        "chars": 6859,
+        "words": 1176,
+        "sentences": 64
+      },
+      "response": {
+        "chars": 2658,
+        "words": 402,
+        "sentences": 22
+      }
+    },
+    {
+      "query": {
+        "chars": 5295,
+        "words": 927,
+        "sentences": 62
+      },
+      "response": {
+        "chars": 3084,
+        "words": 459,
+        "sentences": 24
+      }
+    },
+    {
+      "query": {
+        "chars": 9021,
+        "words": 1560,
+        "sentences": 94
+      },
+      "response": {
+        "chars": 3278,
+        "words": 479,
+        "sentences": 30
+      }
+    },
+    {
+      "query": {
+        "chars": 8683,
+        "words": 1584,
+        "sentences": 98
+      },
+      "response": {
+        "chars": 3493,
+        "words": 528,
+        "sentences": 31
+      }
+    },
+    {
+      "query": {
+        "chars": 773,
+        "words": 120,
+        "sentences": 9
+      },
+      "response": {
+        "chars": 1278,
+        "words": 180,
+        "sentences": 11
+      }
+    },
+    {
+      "query": {
+        "chars": 10960,
+        "words": 1932,
+        "sentences": 118
+      },
+      "response": {
+        "chars": 4804,
+        "words": 695,
+        "sentences": 43
+      }
+    },
+    {
+      "query": {
+        "chars": 11321,
+        "words": 1878,
+        "sentences": 130
+      },
+      "response": {
+        "chars": 3965,
+        "words": 557,
+        "sentences": 33
+      }
     }
   ]
 }
