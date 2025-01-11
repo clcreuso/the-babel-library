@@ -328,8 +328,6 @@ export default class EpubInterface extends EventEmitter {
       result.num = types[type];
     });
 
-    console.log(types, path);
-
     return result.value;
   }
 
