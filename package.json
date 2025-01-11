@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "name": "the-babel-library",
-  "description": "EPUB Translation script with ChatGPT API",
+  "description": "EPUB Modification script with openai API",
   "main": "script.js",
   "private": true,
   "dependencies": {

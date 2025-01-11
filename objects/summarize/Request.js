@@ -236,24 +236,14 @@ const sendRequestContent = (data) => {
 const sendRequestOpenAI = (data) =>
   OpenAI.createChatCompletion({
     model: data.model,
-    messages: [
-      {
-        role: 'user',
-        content: sendRequestContent(data),
-      },
-    ],
+    messages: [{ role: 'user', content: sendRequestContent(data) }],
   });
 
 const sendRequestAnthropic = (data) =>
   client.messages.create({
     model: data.model,
     max_tokens: 8192,
-    messages: [
-      {
-        role: 'user',
-        content: sendRequestContent(data),
-      },
-    ],
+    messages: [{ role: 'user', content: sendRequestContent(data) }],
   });
 
 export default (data) => {

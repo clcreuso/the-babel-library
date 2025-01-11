@@ -1,10 +1,8 @@
-import EPUB from './objects/interfaces/EPUB.js';
+import Main from './objects/summarize/Main.js';
 
 import Logger from './config/logger.js';
 
-const epub = new EPUB({
-  path: process.argv[2],
-});
+const epub = new Main({ path: process.argv[2] });
 
 const write = () => {
   epub.on('writed', () => {
@@ -18,7 +16,7 @@ const write = () => {
 
 const summarize = () => {
   epub.on('summarized', () => {
-    Logger.info('EPUB - summarized');
+    Logger.info('EPUB - SUMMARIZED');
 
     write();
   });

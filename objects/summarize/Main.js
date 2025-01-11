@@ -23,119 +23,11 @@ import { basename } from 'path';
 import Logger from '../../config/logger.js';
 import Toolbox from '../../config/Toolbox.js';
 
-import sendRequest from '../queries/Request.js';
+import CONSTANTS from './Constants.js';
+import sendRequest from './Request.js';
 
-const KEYWORD_TOC_L1 = ['TABLE OF CONTENTS', 'TOC', 'DOC-TOC', 'CONTENTS', 'DOC-PAGELIST'];
-const KEYWORD_CHAPTER_L1 = ['BODYMATTER', 'CHAPTER', 'PART', 'VOLUME'];
-const KEYWORD_USELESS_L1 = [
-  'ACKNOWLEDGMENT',
-  'APPENDIX',
-  'AUDIO',
-  'BACKMATTER',
-  'BIBLIOGRAPHY',
-  'CODE',
-  'COLOPHON',
-  'COPYRIGHT-PAGE',
-  'COPYRIGHT',
-  'COVER',
-  'DEDICATION',
-  'ENDNOTE',
-  'EXAMPLE',
-  'FIGURE',
-  'FRONTMATTER',
-  'GLOSSARY',
-  'INDEX',
-  'NEWSLETTER',
-  'PAGELIST',
-  'QNA',
-  'SIDEBAR',
-  'TABLE',
-  'TITLEPAGE',
-  'VIDEO',
-];
-const KEYWORD_CONCLUSION_L1 = [
-  'AFTERWORD',
-  'CLOSING-REMARK',
-  'CONCLU',
-  'CONCLUSION',
-  'EPILOGUE',
-  'FINAL-THOUGHT',
-  'LAST-WORD',
-  'SUMMARY',
-];
-const KEYWORD_INTRODUCTION_L1 = [
-  'AUTHORSNOTE',
-  'EPIGRAPH',
-  'FOREWORD',
-  'INTRO',
-  'INTRODUCTION',
-  'OPENING-REMARK',
-  'PREAMBLE',
-  'PREFACE',
-  'PROLOGUE',
-];
-
-const KEYWORD_TOC_PATH = ['TABLE_OF_CONTENTS', 'TABLE OF CONTENTS', 'CONTENTS', 'TOC'];
-const KEYWORD_CHAPTER_PATH = ['PART', 'CH', 'VOL'];
-const KEYWORD_USELESS_PATH = [
-  'ACKNOWLEDGMENT',
-  'APPENDIX',
-  'BIBLI',
-  'COPYRIGHT',
-  'COVER',
-  'DEDICATION',
-  'ENDNOTE',
-  'EXAMPLE',
-  'GLOSSARY',
-  'NEWSLETTER',
-  'PAGELIST',
-  'QNA',
-  'TABLE',
-  'TITLEPAGE',
-  'VIDEO',
-];
-const KEYWORD_CONCLUSION_PATH = ['CONCLU', 'EPILOGUE', 'FINAL', 'LAST', 'SUMMARY'];
-const KEYWORD_INTRODUCTION_PATH = [
-  'AUTHORSNOTE',
-  'EPIGRAPH',
-  'INTRO',
-  'OPEN',
-  'PREAMBLE',
-  'PREFACE',
-  'PROLOGUE',
-];
-
-const KEYWORD_TOC_L2 = ['TABLE_OF_CONTENTS', 'TABLE OF CONTENTS'];
-const KEYWORD_CHAPTER_L2 = ['PART', 'CHAPTER', 'VOLUME'];
-const KEYWORD_USELESS_L2 = [
-  'ACKNOWLEDGMENT',
-  'BIBLIOGRAPHY',
-  'COPYRIGHT',
-  'COVER',
-  'DEDICATION',
-  'ENDNOTE',
-  'EXAMPLE',
-  'GLOSSARY',
-  'NEWSLETTER',
-  'PAGELIST',
-  'QNA',
-  'TABLE',
-  'TITLEPAGE',
-  'VIDEO',
-];
-const KEYWORD_CONCLUSION_L2 = ['CONCLUSION', 'EPILOGUE', 'FINAL', 'LAST', 'SUMMARY'];
-const KEYWORD_INTRODUCTION_L2 = [
-  'AUTHORSNOTE',
-  'EPIGRAPH',
-  'INTRODUCTION',
-  'OPEN',
-  'PREAMBLE',
-  'PREFACE',
-  'PROLOGUE',
-];
-
-function cleanHtmlForEpub(html) {
-  const options = {
+const parseHTML = (html) =>
+  minify(html, {
     collapseWhitespace: true,
     keepClosingSlash: true,
     minifyCSS: true,
@@ -146,9 +38,7 @@ function cleanHtmlForEpub(html) {
     removeScriptTypeAttributes: true,
     removeStyleLinkTypeAttributes: true,
     useShortDoctype: true,
-  };
-
-  return minify(html, options).then((res) => {
+  }).then((res) => {
     res = res.replace(/&(?!amp;)/g, '&amp;');
 
     res = res.replaceAll('< /', '</');
@@ -168,7 +58,6 @@ function cleanHtmlForEpub(html) {
 
     return res;
   });
-}
 
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
@@ -408,23 +297,23 @@ export default class EpubInterface extends EventEmitter {
   getContentType(html, path) {
     if (this.hasContentShort(html)) return 'USELESS';
 
-    if (this.getContentLevel1(html, KEYWORD_TOC_L1)) return 'TOC';
-    if (this.getContentLevel1(html, KEYWORD_CONCLUSION_L1)) return 'CONCLUSION';
-    if (this.getContentLevel1(html, KEYWORD_INTRODUCTION_L1)) return 'INTRODUCTION';
-    if (this.getContentLevel1(html, KEYWORD_USELESS_L1) || html.includes('©')) return 'USELESS';
-    if (this.getContentLevel1(html, KEYWORD_CHAPTER_L1)) return 'CHAPTER';
+    if (this.getContentLevel1(html, CONSTANTS.L1.TOC)) return 'TOC';
+    if (this.getContentLevel1(html, CONSTANTS.L1.CONCLUSION)) return 'CONCLUSION';
+    if (this.getContentLevel1(html, CONSTANTS.L1.INTRODUCTION)) return 'INTRODUCTION';
+    if (this.getContentLevel1(html, CONSTANTS.L1.USELESS) || html.includes('©')) return 'USELESS';
+    if (this.getContentLevel1(html, CONSTANTS.L1.CHAPTER)) return 'CHAPTER';
 
-    if (this.getContentPath(path, KEYWORD_TOC_PATH)) return 'TOC';
-    if (this.getContentPath(path, KEYWORD_CONCLUSION_PATH)) return 'CONCLUSION';
-    if (this.getContentPath(path, KEYWORD_INTRODUCTION_PATH)) return 'INTRODUCTION';
-    if (this.getContentPath(path, KEYWORD_USELESS_PATH)) return 'USELESS';
-    if (this.getContentPath(path, KEYWORD_CHAPTER_PATH)) return 'CHAPTER';
+    if (this.getContentPath(path, CONSTANTS.PATH.TOC)) return 'TOC';
+    if (this.getContentPath(path, CONSTANTS.PATH.CONCLUSION)) return 'CONCLUSION';
+    if (this.getContentPath(path, CONSTANTS.PATH.INTRODUCTION)) return 'INTRODUCTION';
+    if (this.getContentPath(path, CONSTANTS.PATH.USELESS)) return 'USELESS';
+    if (this.getContentPath(path, CONSTANTS.PATH.CHAPTER)) return 'CHAPTER';
 
-    if (this.getContentLevel2(html, KEYWORD_TOC_L2)) return 'TOC';
-    if (this.getContentLevel2(html, KEYWORD_CONCLUSION_L2)) return 'CONCLUSION';
-    if (this.getContentLevel2(html, KEYWORD_INTRODUCTION_L2)) return 'INTRODUCTION';
-    if (this.getContentLevel2(html, KEYWORD_USELESS_L2)) return 'USELESS';
-    if (this.getContentLevel2(html, KEYWORD_CHAPTER_L2)) return 'CHAPTER';
+    if (this.getContentLevel2(html, CONSTANTS.L2.TOC)) return 'TOC';
+    if (this.getContentLevel2(html, CONSTANTS.L2.CONCLUSION)) return 'CONCLUSION';
+    if (this.getContentLevel2(html, CONSTANTS.L2.INTRODUCTION)) return 'INTRODUCTION';
+    if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) return 'USELESS';
+    if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) return 'CHAPTER';
 
     return 'CHAPTER';
   }
@@ -804,6 +693,12 @@ export default class EpubInterface extends EventEmitter {
    **                                     Summarize: Request                                      **
    ********************************************************************************************** */
 
+  isValidLanguage(html) {
+    const text = this.getTextHTML(html);
+
+    return text.includes('é') || text.includes('è');
+  }
+
   getJSONRepair(str) {
     try {
       let result = str.slice(str.indexOf('{'), str.lastIndexOf('}') + 1);
@@ -822,7 +717,15 @@ export default class EpubInterface extends EventEmitter {
     if (data.length < 100) return undefined;
 
     try {
-      return JSON.parse(this.getJSONRepair(data));
+      const json = JSON.parse(this.getJSONRepair(data));
+
+      if (!this.isValidLanguage(json.content)) {
+        Logger.warn(`${this.getInfos()} - INVALID_LANGUAGE`, json.content);
+
+        return undefined;
+      }
+
+      return json;
     } catch (error) {
       Logger.error(`${this.getInfos()} - PARSE_RESPONSE_JSON`, data, error);
 
@@ -871,8 +774,8 @@ export default class EpubInterface extends EventEmitter {
         query.response = undefined;
         query.finish = query.count > 2;
       } else {
-        query.response = await cleanHtmlForEpub(response.content).catch((err) => {
-          Logger.error(`${this.getInfos()} - CLEAN_HTML_FOR_EPUB`, err);
+        query.response = await parseHTML(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_SUMMARIZE`, err);
 
           return undefined;
         });
@@ -911,7 +814,7 @@ export default class EpubInterface extends EventEmitter {
         query.waiting = false;
       });
 
-    Logger.info(`${this.getInfos()} - SEND_SUMMARIZE_REQUEST`);
+    Logger.info(`${this.getInfos()} - SEND_SUMMARIZE_REQUEST`, this.getTextStats(query.text));
   }
 
   /** **********************************************************************************************
@@ -962,8 +865,8 @@ export default class EpubInterface extends EventEmitter {
 
         Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, response);
       } else {
-        this.introduction.response = await cleanHtmlForEpub(response.content).catch((err) => {
-          Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST_HTML`, err);
+        this.introduction.response = await parseHTML(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_INTRODUCTION`, err);
 
           return undefined;
         });
@@ -1038,8 +941,8 @@ export default class EpubInterface extends EventEmitter {
 
         Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, response);
       } else {
-        this.conclusion.response = await cleanHtmlForEpub(response.content).catch((err) => {
-          Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST_HTML`, err);
+        this.conclusion.response = await parseHTML(response.content).catch((err) => {
+          Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_CONCLUSION`, err);
 
           return undefined;
         });
