@@ -161,24 +161,39 @@ export default class EpubInterface extends EventEmitter {
     return `./library/Summarized/${this.getEpubName()}.epub`;
   }
 
+  hasSectionTag(tag) {
+    return [
+      '<header',
+      '<hr',
+      '<h1',
+      '<h2',
+      '<h3',
+      '<h4',
+      '<h5',
+      '<h6',
+      '<section',
+      '<div',
+      '<main',
+      '<footer',
+      '<article',
+      '<aside',
+    ].some((sectionTag) => tag.trim().toLowerCase() === sectionTag);
+  }
+
   hasTitleHTML(html, index) {
-    if (html[index] !== '<' && html[index + 1] !== '/') return false;
-
-    if (html[index] !== '<' && html[index + 1] === 'h') return true;
-
-    if (_.isEmpty(this.tags)) return false;
+    if (html[index] !== '<' || html[index + 1] === '/') return false;
 
     let tag = '';
 
-    while (html[index] && html[index] !== '>') {
+    while (html[index] && html[index] !== ' ' && html[index] !== '>') {
       tag += html[index];
 
       index += 1;
     }
 
-    tag += html[index];
+    if (this.hasSectionTag(tag)) return true;
 
-    return this.tags.includes(tag);
+    return false;
   }
 
   getTextHTML(html) {
@@ -1093,65 +1108,7 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  parseTagsHTML(path) {
-    const html = this.readFile(path);
-
-    if (!html.includes('body')) return {};
-
-    if (this.getContentType(html, path) !== 'CHAPTER') return {};
-
-    const result = {};
-
-    for (let index = html.indexOf('body'); index < html.length; index += 1) {
-      if (html[index] === '<' && html[index + 1] !== '/') {
-        let tag = '';
-
-        while (html[index] && html[index] !== '>') {
-          tag += html[index];
-
-          index += 1;
-        }
-
-        tag += html[index];
-
-        result[tag] ||= 0;
-        result[tag] += 1;
-      }
-    }
-
-    return result;
-  }
-
-  parseTags() {
-    this.tags = [];
-
-    const tmp = {};
-
-    this.epub.flow.forEach((infos) => {
-      this.file.paths.forEach((path) => {
-        if (!path.includes(infos.href)) return;
-
-        const tags = this.parseTagsHTML(path);
-
-        Object.entries(tags).forEach(([tag, value]) => {
-          if (value <= 1) return;
-
-          tmp[tag] ||= 0;
-          tmp[tag] += value;
-        });
-      });
-    });
-
-    Object.entries(tmp).forEach(([tag, value]) => {
-      if (value > this.epub.flow.length / 2 && value < this.epub.flow.length * 4) {
-        this.tags.push(tag);
-      }
-    });
-  }
-
   parse() {
-    this.parseTags();
-
     this.files = {};
 
     let chapter = 0;

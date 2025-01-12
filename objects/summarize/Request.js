@@ -88,16 +88,18 @@ const getRequestIntroduction = (data) => {
 const getRequestChapter = (data) => {
   if (data.language === 'French')
     return [
-      `Objectif : Créer un résumé clair en français, au format HTML`,
-      `Le contenu provient de la section d'un livre`,
+      `Objectif : Créer un résumé clair et pertinent en français, au format HTML.`,
+      `Contexte : Le contenu provient de la section d'un livre.`,
       `Conditions :`,
-      `- Pas d'introduction et Conclusion. Uniquement titre -> paragraphe, titre -> paragraphe...`,
-      `- Résume pour comprendre en PROFONDEUR la section du livre`,
-      `Exigences :`,
-      `- Utilse uniquement ces balises: <h>, <p>, <b>, <i>, <br>`,
+      `- Ne pas inclure d'introduction générale, de conclusion ou de digressions anecdotiques.`,
+      `- Se concentrer uniquement sur les idées principales, concepts clés, théories marquantes, et anecdotes intéressantes.`,
+      `- Ignorer les éléments narratifs ou descriptifs non essentiels, comme des scènes de la vie quotidienne ou des détails sans valeur intellectuelle.`,
+      `Format attendu :`,
+      `- Utiliser uniquement ces balises : <h1>, <h2>, <p>, <b>, <i>, <br>.`,
+      `- Structurer le contenu en titres et paragraphes pour une lecture claire.`,
       `Réponse attendue (en JSON) :`,
       `{ "content": "HTML" }`,
-      `Contenu:`,
+      `Contenu à résumer :`,
       data.content,
     ].join('\n');
 
