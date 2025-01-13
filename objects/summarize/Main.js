@@ -263,6 +263,16 @@ export default class EpubInterface extends EventEmitter {
     return Object.values(this.book.queries).every((query) => query.finish);
   }
 
+  hasContentLong(html) {
+    if (!html) return true;
+
+    const stats = this.getTextStats(this.getTextHTML(html));
+
+    if (stats.words < 2500) return false;
+
+    return true;
+  }
+
   hasContentShort(html) {
     if (!html) return true;
 
@@ -298,12 +308,16 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getContentLevel2(html, keywords) {
+    const text = this.getTextHTML(html).slice(0, 100).toUpperCase();
+
     for (const keyword of keywords) {
       const regexPatterns = [
         `<(section|div|h1|h2|h3).*${keyword}.*/\\1>`,
         `<TITLE.*${keyword}.*/TITLE>`,
         `"${keyword}"`,
       ];
+
+      if (text.includes(keyword)) return true;
 
       for (const pattern of regexPatterns) {
         if (new RegExp(pattern, 'i').test(html)) return true;
@@ -339,6 +353,12 @@ export default class EpubInterface extends EventEmitter {
     if (this.getContentLevel2(html, CONSTANTS.L2.INTRODUCTION)) types.INTRODUCTION += 2;
     if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) types.USELESS += 1;
     if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) types.CHAPTER += 1;
+
+    if (this.hasContentLong(html)) {
+      types.CHAPTER += 1;
+      types.CONCLUSION = 0;
+      types.INTRODUCTION = 0;
+    }
 
     ['CHAPTER', 'TOC', 'CONCLUSION', 'INTRODUCTION', 'USELESS'].forEach((type) => {
       if (result.num >= types[type]) return;
@@ -1115,11 +1135,15 @@ export default class EpubInterface extends EventEmitter {
         section.split('|TITLE|').forEach((subText) => {
           query = this.manageQuery(subText);
 
-          query.text += ` ${subText}`;
+          subText.split('.').forEach((sentence) => {
+            query = this.manageQuery(sentence);
 
-          query.text = query.text.replace(/\s+/g, ' ');
+            query.text += ` ${sentence}`;
 
-          query.stats = this.getTextStats(query.text);
+            query.text = query.text.replace(/\s+/g, ' ');
+
+            query.stats = this.getTextStats(query.text);
+          });
         });
       });
     });
