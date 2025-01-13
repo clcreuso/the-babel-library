@@ -1073,13 +1073,30 @@ export default class EpubInterface extends EventEmitter {
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsQuery.words < 2000) return query;
+    if (statsQuery.words < 1500) return query;
 
-    if (statsText.words + statsQuery.words < 4000) return query;
+    if (statsText.words + statsQuery.words < 3000) return query;
 
     this.addQuery();
 
     return this.book.queries[this.book.queries.length - 1];
+  }
+
+  mergeQueries() {
+    let last = null;
+
+    this.book.queries.forEach((query) => {
+      if (last?.finish === false && query.stats.words < 1000) {
+        last.text += query.text;
+        last.stats = this.getTextStats(last.text);
+
+        query.text = '';
+        query.finish = true;
+        query.stats = this.getTextStats(query.text);
+      }
+
+      last = query;
+    });
   }
 
   parseQueries() {
@@ -1128,6 +1145,8 @@ export default class EpubInterface extends EventEmitter {
     });
 
     this.parseQueries();
+
+    this.mergeQueries();
 
     setTimeout(() => this.emit('parsed'), 2500);
   }
