@@ -312,7 +312,7 @@ export default class EpubInterface extends EventEmitter {
   getContentType(html, path) {
     const result = { value: 'CHAPTER', num: 0 };
 
-    const types = { CHAPTER: 0, CONCLUSION: 0, INTRODUCTION: 0, TOC: 0, USELESS: 0 };
+    const types = { CHAPTER: 1, CONCLUSION: 0, INTRODUCTION: 0, TOC: 0, USELESS: 0 };
 
     if (html.includes('©')) types.USELESS += 5;
 
@@ -336,7 +336,7 @@ export default class EpubInterface extends EventEmitter {
     if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) types.USELESS += 1;
     if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) types.CHAPTER += 1;
 
-    ['TOC', 'CONCLUSION', 'INTRODUCTION', 'USELESS', 'CHAPTER'].forEach((type) => {
+    ['CHAPTER', 'TOC', 'CONCLUSION', 'INTRODUCTION', 'USELESS'].forEach((type) => {
       if (result.num >= types[type]) return;
 
       result.value = type;
@@ -1063,17 +1063,15 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  manageQuery(text, onChapter = false) {
+  manageQuery(text) {
     const query = this.book.queries[this.book.queries.length - 1];
 
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsQuery.words < this.trigger / 5) return query;
+    if (statsQuery.words < 2000) return query;
 
-    if (!onChapter && statsQuery.words < this.trigger / 2) return query;
-
-    if (statsText.words + statsQuery.words < this.trigger) return query;
+    if (statsText.words + statsQuery.words < 4000) return query;
 
     this.addQuery();
 
@@ -1088,12 +1086,10 @@ export default class EpubInterface extends EventEmitter {
 
       let query = this.book.queries[this.book.queries.length - 1];
 
-      if (chapter.sections.length > 1 && !_.isEmpty(query.text)) this.addQuery();
-
-      query = this.manageQuery(chapter.sections.join(''), true);
+      query = this.manageQuery(chapter.sections.join(''));
 
       chapter.sections.forEach((section) => {
-        query = this.manageQuery(section, true);
+        query = this.manageQuery(section);
 
         section.split('|TITLE|').forEach((subText) => {
           query = this.manageQuery(subText);
