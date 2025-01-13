@@ -1,7 +1,7 @@
 export default {
   L1: {
     TOC: ['TABLE OF CONTENTS', 'TOC', 'DOC-TOC', 'CONTENTS', 'DOC-PAGELIST'],
-    CHAPTER: ['BODYMATTER', 'CHAPTER', 'PART', 'VOLUME'],
+    CHAPTER: ['BODYMATTER', 'CHAPTER', 'VOLUME'],
     CONCLUSION: ['CONCLUSION', 'EPILOGUE', 'FINAL', 'LAST', 'SUMMARY'],
     INTRODUCTION: [
       'AUTHORSNOTE',
@@ -9,6 +9,7 @@ export default {
       'INTRODUCTION',
       'FRONTMATTER',
       'OPEN',
+      'PRAISE',
       'PREAMBLE',
       'PREFACE',
       'PROLOGUE',
@@ -38,7 +39,7 @@ export default {
   },
   L2: {
     TOC: ['TABLE_OF_CONTENTS', 'TABLE OF CONTENTS'],
-    CHAPTER: ['PART', 'CHAPTER', 'VOLUME'],
+    CHAPTER: ['CHAPTER', 'VOLUME'],
     CONCLUSION: [
       'AFTERWORD',
       'CLOSING-REMARK',
@@ -54,6 +55,7 @@ export default {
       'EPIGRAPH',
       'FOREWORD',
       'INTRO',
+      'PRAISE',
       'INTRODUCTION',
       'FRONTMATTER',
       'OPENING-REMARK',
@@ -96,13 +98,14 @@ export default {
   },
   PATH: {
     TOC: ['TABLE_OF_CONTENTS', 'TABLE OF CONTENTS', 'CONTENTS', 'TOC'],
-    CHAPTER: ['PART', 'CH', 'VOL'],
+    CHAPTER: ['CH', 'VOL'],
     CONCLUSION: ['CONCLU', 'EPILOGUE', 'FINAL', 'LAST', 'SUMMARY'],
     INTRODUCTION: [
       'AUTHORSNOTE',
       'EPIGRAPH',
       'INTRO',
       'OPEN',
+      'PRAISE',
       'PREAMBLE',
       'PREFACE',
       'PROLOGUE',
