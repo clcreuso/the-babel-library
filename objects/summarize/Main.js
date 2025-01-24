@@ -26,39 +26,6 @@ import Toolbox from '../../config/Toolbox.js';
 import CONSTANTS from './Constants.js';
 import sendRequest from './Request.js';
 
-const parseHTML = (html) =>
-  minify(html, {
-    collapseWhitespace: true,
-    keepClosingSlash: true,
-    minifyCSS: true,
-    minifyJS: true,
-    removeComments: true,
-    removeEmptyAttributes: true,
-    removeRedundantAttributes: true,
-    removeScriptTypeAttributes: true,
-    removeStyleLinkTypeAttributes: true,
-    useShortDoctype: true,
-  }).then((res) => {
-    res = res.replace(/&(?!amp;)/g, '&amp;');
-
-    res = res.replaceAll('< /', '</');
-
-    res = res.replace(/\s+/g, ' ');
-
-    res = res.replace(/<br\s*\/?>/gi, '<br />');
-
-    res = res.replace(/<h>/gi, '<h3>');
-    res = res.replace(/<\/h>/gi, '</h3>');
-
-    res = res.replace(/<h[1-6]/gi, '<h3');
-    res = res.replace(/h[1-6]>/gi, 'h3>');
-
-    res = res.replace(/<h3/i, '<h2');
-    res = res.replace(/h3>/i, 'h2>');
-
-    return res;
-  });
-
 export default class EpubInterface extends EventEmitter {
   constructor(params) {
     super();
@@ -93,9 +60,7 @@ export default class EpubInterface extends EventEmitter {
     this.params = {
       user: params.user || 'Default',
       model: params.model || 'gpt-4o-2024-11-20',
-      // model: params.model || 'claude-3-5-sonnet-latest',
       language: params.language || 'French',
-      ratio: params.ratio || 6,
     };
 
     this.metadata = params.metadata || {};
@@ -745,6 +710,40 @@ export default class EpubInterface extends EventEmitter {
    **                                     Summarize: Request                                      **
    ********************************************************************************************** */
 
+  parseHTML(html) {
+    return minify(html, {
+      collapseWhitespace: true,
+      keepClosingSlash: true,
+      minifyCSS: true,
+      minifyJS: true,
+      removeComments: true,
+      removeEmptyAttributes: true,
+      removeRedundantAttributes: true,
+      removeScriptTypeAttributes: true,
+      removeStyleLinkTypeAttributes: true,
+      useShortDoctype: true,
+    }).then((res) => {
+      res = res.replace(/&(?!amp;)/g, '&amp;');
+
+      res = res.replaceAll('< /', '</');
+
+      res = res.replace(/\s+/g, ' ');
+
+      res = res.replace(/<br\s*\/?>/gi, '<br />');
+
+      res = res.replace(/<h>/gi, '<h3>');
+      res = res.replace(/<\/h>/gi, '</h3>');
+
+      res = res.replace(/<h[1-6]/gi, '<h3');
+      res = res.replace(/h[1-6]>/gi, 'h3>');
+
+      res = res.replace(/<h3/i, '<h2');
+      res = res.replace(/h3>/i, 'h2>');
+
+      return res;
+    });
+  }
+
   isValidLanguage(html) {
     const text = this.getTextHTML(html);
 
@@ -785,22 +784,6 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  manageTrigger(query, response) {
-    const ratio = query.words / response.words;
-
-    if (ratio < this.params.ratio - 1 && query.words >= this.trigger && this.trigger <= 4000) {
-      this.trigger += 20;
-
-      Logger.info(`${this.getInfos()} - UP_TRIGGER`, { ratio, trigger: this.trigger });
-    }
-
-    if (ratio < this.params.ratio + 1 && query.words <= this.trigger && this.trigger >= 2000) {
-      this.trigger -= 20;
-
-      Logger.info(`${this.getInfos()} - DOWN_TRIGGER`, { ratio, trigger: this.trigger });
-    }
-  }
-
   manageDatabaseRatio(query) {
     if (!query.response) return;
 
@@ -826,13 +809,11 @@ export default class EpubInterface extends EventEmitter {
         query.response = undefined;
         query.finish = query.count > 2;
       } else {
-        query.response = await parseHTML(response.content).catch((err) => {
+        query.response = await this.parseHTML(response.content).catch((err) => {
           Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_SUMMARIZE`, err);
 
           return undefined;
         });
-
-        this.manageDatabaseRatio(query);
 
         query.finish = query.response !== undefined || query.count > 2;
       }
@@ -917,7 +898,7 @@ export default class EpubInterface extends EventEmitter {
 
         Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, response);
       } else {
-        this.introduction.response = await parseHTML(response.content).catch((err) => {
+        this.introduction.response = await this.parseHTML(response.content).catch((err) => {
           Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_INTRODUCTION`, err);
 
           return undefined;
@@ -993,7 +974,7 @@ export default class EpubInterface extends EventEmitter {
 
         Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, response);
       } else {
-        this.conclusion.response = await parseHTML(response.content).catch((err) => {
+        this.conclusion.response = await this.parseHTML(response.content).catch((err) => {
           Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_CONCLUSION`, err);
 
           return undefined;
