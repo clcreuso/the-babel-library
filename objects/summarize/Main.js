@@ -784,21 +784,6 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  manageDatabaseRatio(query) {
-    if (!query.response) return;
-
-    const textStats = this.getTextStats(query.text);
-    const responseStats = this.getTextStats(this.getTextHTML(query.response));
-
-    this.database.history ||= [];
-
-    this.database.history.push({ query: textStats, response: responseStats });
-
-    if (this.database.history.length > 1000) this.database.history.shift();
-
-    this.writeFile(this.constants.database, JSON.stringify(this.database, null, 2));
-  }
-
   async parseSummarizeRequest(data, query) {
     try {
       query.count += 1;
@@ -1119,7 +1104,7 @@ export default class EpubInterface extends EventEmitter {
           subText.split('.').forEach((sentence) => {
             query = this.manageQuery(sentence);
 
-            query.text += ` ${sentence}`;
+            query.text += ` ${sentence}.`;
 
             query.text = query.text.replace(/\s+/g, ' ');
 
@@ -1231,16 +1216,6 @@ export default class EpubInterface extends EventEmitter {
     });
   }
 
-  initDatabase() {
-    this.database = JSON.parse(this.readFile(this.constants.database));
-
-    this.database.history ||= [];
-
-    this.database.history.forEach((el) => this.manageTrigger(el.query, el.response));
-
-    Logger.info(`${this.getInfos()} - INIT_DATABASE`);
-  }
-
   init() {
     this.epub = new EPUB(this.file.path);
 
@@ -1253,7 +1228,6 @@ export default class EpubInterface extends EventEmitter {
     this.epub.on('end', async () => {
       this.initEpub();
       this.initPaths();
-      this.initDatabase();
 
       await this.promptCover();
       await this.promptMetadata();
