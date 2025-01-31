@@ -55,7 +55,7 @@ export default class EpubInterface extends EventEmitter {
       paths: [],
     };
 
-    this.trigger = 3000;
+    this.trigger = 2500;
 
     this.params = {
       user: params.user || 'Default',
@@ -196,7 +196,7 @@ export default class EpubInterface extends EventEmitter {
 
     const stats = this.getTextStats(this.getTextHTML(html));
 
-    if (stats.words < 2500) return false;
+    if (stats.words < this.trigger / 2) return false;
 
     return true;
   }
@@ -206,7 +206,7 @@ export default class EpubInterface extends EventEmitter {
 
     const stats = this.getTextStats(this.getTextHTML(html));
 
-    if (stats.words > 50) return false;
+    if (stats.words > this.trigger / 20) return false;
 
     if (stats.chars > 200) return false;
 
