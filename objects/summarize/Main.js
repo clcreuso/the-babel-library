@@ -1115,13 +1115,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.mergeQueries();
 
-    this.book.queries.forEach((query) => {
-      console.log(query.stats);
-    });
-
-    // this.emit('parsed');
-
-    process.exit();
+    this.emit('parsed');
   }
 
   /** **********************************************************************************************
