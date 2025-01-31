@@ -1,10 +1,20 @@
-// import Main from './objects/summarize/Main.js';
-import Main from './objects/translate/interfaces/EPUB.js';
-// import Main from './objects/rewrite/interfaces/EPUB.js';
+import Summarize from './objects/summarize/Main.js';
+import Rewrite from './objects/rewrite/interfaces/EPUB.js';
+import Translate from './objects/translate/interfaces/EPUB.js';
 
 import Logger from './config/logger.js';
 
-const epub = new Main({ path: process.argv[2] });
+const getEpub = () => {
+  if (process.argv[2] === '-r') return new Rewrite({ path: process.argv[3] });
+
+  if (process.argv[2] === '-t') return new Translate({ path: process.argv[3] });
+
+  if (process.argv[2] === '-s') return new Summarize({ path: process.argv[3] });
+
+  return new Translate({ path: process.argv[3] });
+};
+
+const epub = getEpub();
 
 const write = () => {
   epub.on('writed', () => {
