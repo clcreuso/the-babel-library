@@ -14,12 +14,12 @@ import mime from 'mime-types';
 import inquirer from 'inquirer';
 import beautify from 'simply-beautiful';
 
+import { basename } from 'path';
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
 import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
 
-import { basename } from 'path';
 import Logger from '../../config/logger.js';
 import Toolbox from '../../config/Toolbox.js';
 
@@ -1002,10 +1002,10 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                          Summarize                                          **
+   **                                           Process                                           **
    ********************************************************************************************** */
 
-  onSummarizeInterval() {
+  onProcessInterval() {
     if (!this.introduction.finish && !this.introduction.waiting) {
       this.sendIntroductionRequest();
     } else if (!this.conclusion.finish && !this.conclusion.waiting) {
@@ -1015,28 +1015,26 @@ export default class EpubInterface extends EventEmitter {
 
       if (!this.hasFinish()) return;
 
-      this.emit('summarized');
+      this.emit('processed');
 
-      this.stopSummarizeInterval();
+      this.stopProcessInterval();
     }
   }
 
-  stopSummarizeInterval() {
+  stopProcessInterval() {
     clearInterval(this.timers.queries.id);
 
     this.timers.queries.id = null;
   }
 
-  summarize() {
-    this.stopSummarizeInterval();
-
-    this.onSummarizeInterval();
+  process() {
+    this.stopProcessInterval();
 
     this.timers.queries.id = setInterval(() => {
-      this.onSummarizeInterval();
+      this.onProcessInterval();
     }, this.timers.queries.interval);
 
-    Logger.info(`${this.getInfos()} - START_SUMMARIZE_INTERVAL`);
+    Logger.info(`${this.getInfos()} - START_PROCESS_INTERVAL`);
   }
 
   /** **********************************************************************************************
@@ -1138,7 +1136,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.mergeQueries();
 
-    setTimeout(() => this.emit('parsed'), 2500);
+    this.emit('parsed');
   }
 
   /** **********************************************************************************************

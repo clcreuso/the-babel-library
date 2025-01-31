@@ -1,4 +1,6 @@
-import Main from './objects/summarize/Main.js';
+// import Main from './objects/summarize/Main.js';
+import Main from './objects/translate/interfaces/EPUB.js';
+// import Main from './objects/rewrite/interfaces/EPUB.js';
 
 import Logger from './config/logger.js';
 
@@ -14,21 +16,21 @@ const write = () => {
   epub.write();
 };
 
-const summarize = () => {
-  epub.on('summarized', () => {
-    Logger.info('EPUB - SUMMARIZED');
+const launch = () => {
+  epub.on('processed', () => {
+    Logger.info('EPUB - PROCESSED');
 
     write();
   });
 
-  epub.summarize();
+  epub.process();
 };
 
 const parse = () => {
   epub.on('parsed', () => {
     Logger.info('EPUB - PARSED');
 
-    summarize();
+    launch();
   });
 
   epub.parse();
