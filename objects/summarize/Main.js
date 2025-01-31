@@ -126,41 +126,6 @@ export default class EpubInterface extends EventEmitter {
     return `./library/Summarized/${this.getEpubName()}.epub`;
   }
 
-  hasSectionTag(tag) {
-    return [
-      '<header',
-      '<hr',
-      '<h1',
-      '<h2',
-      '<h3',
-      '<h4',
-      '<h5',
-      '<h6',
-      '<section',
-      '<div',
-      '<main',
-      '<footer',
-      '<article',
-      '<aside',
-    ].some((sectionTag) => tag.trim().toLowerCase() === sectionTag);
-  }
-
-  hasTitleHTML(html, index) {
-    if (html[index] !== '<' || html[index + 1] === '/') return false;
-
-    let tag = '';
-
-    while (html[index] && html[index] !== ' ' && html[index] !== '>') {
-      tag += html[index];
-
-      index += 1;
-    }
-
-    if (this.hasSectionTag(tag)) return true;
-
-    return false;
-  }
-
   getTextHTML(html) {
     let result = '';
 
@@ -169,8 +134,6 @@ export default class EpubInterface extends EventEmitter {
       index < html.length;
       index += 1
     ) {
-      if (this.hasTitleHTML(html, index)) result += '|TITLE|';
-
       if (html[index] === '>') {
         while (html[index + 1] && html[index + 1] !== '<') {
           index += 1;
@@ -1057,9 +1020,9 @@ export default class EpubInterface extends EventEmitter {
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
 
-    if (statsQuery.words < 1500) return query;
+    if (statsQuery.words < this.trigger / 2) return query;
 
-    if (statsText.words + statsQuery.words < 3000) return query;
+    if (statsText.words + statsQuery.words < this.trigger) return query;
 
     this.addQuery();
 
@@ -1070,7 +1033,7 @@ export default class EpubInterface extends EventEmitter {
     let last = null;
 
     this.book.queries.forEach((query) => {
-      if (last?.finish === false && query.stats.words < 1000) {
+      if (last?.finish === false && query.stats.words < this.trigger / 3) {
         last.text += query.text;
         last.stats = this.getTextStats(last.text);
 
@@ -1081,6 +1044,28 @@ export default class EpubInterface extends EventEmitter {
 
       last = query;
     });
+  }
+
+  splitSection(text) {
+    const textStats = this.getTextStats(text);
+
+    if (textStats.words < this.trigger) return [text];
+
+    const trigger = Math.round(textStats.words / Math.ceil(textStats.words / this.trigger));
+
+    const result = [''];
+
+    text.split('.').forEach((sentence) => {
+      const stats = this.getTextStats(result[result.length - 1]);
+
+      if (stats.words >= trigger) {
+        result.push(`${sentence}.`);
+      } else {
+        result[result.length - 1] += ` ${sentence}.`;
+      }
+    });
+
+    return result;
   }
 
   parseQueries() {
@@ -1094,20 +1079,14 @@ export default class EpubInterface extends EventEmitter {
       query = this.manageQuery(chapter.sections.join(''));
 
       chapter.sections.forEach((section) => {
-        query = this.manageQuery(section);
-
-        section.split('|TITLE|').forEach((subText) => {
+        this.splitSection(section).forEach((subText) => {
           query = this.manageQuery(subText);
 
-          subText.split('.').forEach((sentence) => {
-            query = this.manageQuery(sentence);
+          query.text += subText;
 
-            query.text += ` ${sentence}.`;
+          query.text = query.text.replace(/\s+/g, ' ');
 
-            query.text = query.text.replace(/\s+/g, ' ');
-
-            query.stats = this.getTextStats(query.text);
-          });
+          query.stats = this.getTextStats(query.text);
         });
       });
     });
@@ -1136,7 +1115,13 @@ export default class EpubInterface extends EventEmitter {
 
     this.mergeQueries();
 
-    this.emit('parsed');
+    this.book.queries.forEach((query) => {
+      console.log(query.stats);
+    });
+
+    // this.emit('parsed');
+
+    process.exit();
   }
 
   /** **********************************************************************************************
