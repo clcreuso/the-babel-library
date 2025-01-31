@@ -677,7 +677,9 @@ export default class EpubInterface extends EventEmitter {
   async isValidTranslation(translation, origin, file, uuid) {
     if (translation.includes('\\"uuid-')) return false;
 
-    if (Toolbox.countWords(origin) <= 5 && Toolbox.countWords(translation) <= 5) return true;
+    if (origin.length <= 100 && translation.length <= 100) return true;
+
+    if (Toolbox.countWords(origin) <= 25 && Toolbox.countWords(translation) <= 25) return true;
 
     const vChars = this.isValidTranslationLength(translation, origin, file, uuid, 'chars');
     const vWords = this.isValidTranslationLength(translation, origin, file, uuid, 'words');
