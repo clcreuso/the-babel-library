@@ -6,7 +6,6 @@
 
 import _ from 'lodash';
 import fs from 'fs';
-import EPUB from 'epub';
 import zip from 'archiver';
 
 import prompt from 'prompt';
@@ -20,10 +19,13 @@ import { EventEmitter } from 'events';
 import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
 
+import ytdl from 'ytdl-core';
+
+import { getSubtitles } from 'youtube-captions-scraper';
+
 import Logger from '../../config/logger.js';
 import Toolbox from '../../config/Toolbox.js';
 
-import CONSTANTS from './Constants.js';
 import sendRequest from './Request.js';
 
 export default class EpubInterface extends EventEmitter {
@@ -44,18 +46,14 @@ export default class EpubInterface extends EventEmitter {
       ncx: './tmp/epub/toc.ncx',
     };
 
-    this.conclusion = { response: undefined, count: 0, waiting: false, finish: false };
-    this.introduction = { response: undefined, count: 0, waiting: false, finish: false };
-
-    this.database = {};
-
-    this.book = {
-      chapters: [],
-      queries: [],
-      paths: [],
-    };
+    this.id = params.id;
 
     this.trigger = 2500;
+
+    this.book = { chapters: [], queries: [], paths: [] };
+
+    this.conclusion = { response: undefined, count: 0, waiting: false, finish: false };
+    this.introduction = { response: undefined, count: 0, waiting: false, finish: false };
 
     this.params = {
       user: params.user || 'Default',
@@ -63,13 +61,9 @@ export default class EpubInterface extends EventEmitter {
       language: params.language || 'French',
     };
 
-    this.metadata = params.metadata || {};
-
     this.timers = {
       queries: { id: null, interval: 1000 },
     };
-
-    this.setFile(params.path);
   }
 
   /** **********************************************************************************************
@@ -148,14 +142,8 @@ export default class EpubInterface extends EventEmitter {
     return result.replace(/\s+/g, ' ');
   }
 
-  parseTextHTML(path, infos, logs = false) {
+  parseTextHTML(path) {
     const html = this.readFile(path);
-
-    if (this.getContentType(html, infos.href) !== 'CHAPTER') {
-      if (logs) Logger.warn(`${this.getInfos()} - USELESS_CONTENT`, infos.href);
-
-      return '';
-    }
 
     return this.getTextHTML(html);
   }
@@ -169,14 +157,6 @@ export default class EpubInterface extends EventEmitter {
     this.metadata.cover_name = cover.href.match(/[^/]+$/)[0];
     this.metadata.cover_path = cover.href;
     this.metadata.cover_type = cover['media-type'];
-  }
-
-  setFile(path) {
-    this.file = {};
-
-    this.file.path = path;
-    this.file.hash = Toolbox.getFileHash(path);
-    this.file.folder = `./tmp/${this.file.hash}`;
   }
 
   /** **********************************************************************************************
@@ -253,49 +233,6 @@ export default class EpubInterface extends EventEmitter {
     }
 
     return false;
-  }
-
-  getContentType(html, path) {
-    const result = { value: 'CHAPTER', num: 0 };
-
-    const types = { CHAPTER: 0, CONCLUSION: 0, INTRODUCTION: 0, TOC: 0, USELESS: 0 };
-
-    if (html.includes('©')) types.USELESS += 5;
-
-    if (this.hasContentShort(html)) types.USELESS += 5;
-
-    if (this.getContentLevel1(html, CONSTANTS.L1.TOC)) types.TOC += 5;
-    if (this.getContentLevel1(html, CONSTANTS.L1.CONCLUSION)) types.CONCLUSION += 5;
-    if (this.getContentLevel1(html, CONSTANTS.L1.INTRODUCTION)) types.INTRODUCTION += 5;
-    if (this.getContentLevel1(html, CONSTANTS.L1.USELESS)) types.USELESS += 3;
-    if (this.getContentLevel1(html, CONSTANTS.L1.CHAPTER)) types.CHAPTER += 3;
-
-    if (this.getContentPath(path, CONSTANTS.PATH.TOC)) types.TOC += 3;
-    if (this.getContentPath(path, CONSTANTS.PATH.CONCLUSION)) types.CONCLUSION += 3;
-    if (this.getContentPath(path, CONSTANTS.PATH.INTRODUCTION)) types.INTRODUCTION += 3;
-    if (this.getContentPath(path, CONSTANTS.PATH.USELESS)) types.USELESS += 2;
-    if (this.getContentPath(path, CONSTANTS.PATH.CHAPTER)) types.CHAPTER += 2;
-
-    if (this.getContentLevel2(html, CONSTANTS.L2.TOC)) types.TOC += 2;
-    if (this.getContentLevel2(html, CONSTANTS.L2.CONCLUSION)) types.CONCLUSION += 2;
-    if (this.getContentLevel2(html, CONSTANTS.L2.INTRODUCTION)) types.INTRODUCTION += 2;
-    if (this.getContentLevel2(html, CONSTANTS.L2.USELESS)) types.USELESS += 1;
-    if (this.getContentLevel2(html, CONSTANTS.L2.CHAPTER)) types.CHAPTER += 1;
-
-    if (this.hasContentLong(html)) {
-      types.CHAPTER += 1;
-      types.CONCLUSION = 0;
-      types.INTRODUCTION = 0;
-    }
-
-    ['CHAPTER', 'TOC', 'CONCLUSION', 'INTRODUCTION', 'USELESS'].forEach((type) => {
-      if (result.num >= types[type]) return;
-
-      result.value = type;
-      result.num = types[type];
-    });
-
-    return result.value;
   }
 
   readFile(path) {
@@ -825,8 +762,6 @@ export default class EpubInterface extends EventEmitter {
 
         const html = this.readFile(path);
 
-        if (this.getContentType(html, infos.href) !== 'INTRODUCTION') return;
-
         text += this.getTextHTML(html);
       });
     });
@@ -900,8 +835,6 @@ export default class EpubInterface extends EventEmitter {
         if (!path.includes(infos.href)) return;
 
         const html = this.readFile(path);
-
-        if (this.getContentType(html, infos.href) !== 'CONCLUSION') return;
 
         text += this.getTextHTML(html);
       });
@@ -1171,45 +1104,77 @@ export default class EpubInterface extends EventEmitter {
    **                                            Init                                             **
    ********************************************************************************************** */
 
-  initEpub() {
-    if (fs.existsSync(this.file.folder)) {
-      fs.rmSync(this.file.folder, { recursive: true, force: true });
+  parseTime(t) {
+    return t
+      .split(':')
+      .reverse()
+      .reduce((s, m, h) => s + Number(m) * 60 ** h, 0);
+  }
+
+  initVideoChapters() {
+    const chapters = _.chain(this.video.description.split('\n'))
+      .map((line) => line.trim())
+      .filter((line) => /^[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\s+/.test(line))
+      .map((line) => {
+        const match = line.match(/^([0-9]{1,2}(?::[0-9]{2}){1,2})\s+(.+)$/);
+
+        return match ? { start: this.parseTime(match[1]), title: match[2].trim() } : null;
+      })
+      .compact()
+      .value();
+
+    this.video.chapters = chapters.map((chap, i) => ({
+      start: chap.start,
+      stop: i < chapters.length - 1 ? chapters[i + 1].start : this.video.length,
+      title: chap.title,
+    }));
+  }
+
+  async initVideoInfos() {
+    try {
+      const info = await ytdl.getBasicInfo(`https://www.youtube.com/watch?v=${this.id}`);
+
+      this.video.title = info.player_response.videoDetails.title;
+      this.video.length = Number(info.player_response.videoDetails.lengthSeconds);
+      this.video.description = info.player_response.videoDetails.shortDescription;
+      this.video.thumbnail = _.maxBy(
+        info.player_response.videoDetails.thumbnail.thumbnails,
+        'width'
+      );
+    } catch (error) {
+      console.error('Erreur lors de la récupération des infos :', error);
     }
-
-    this.epub.zip.admZip.extractAllTo(this.file.folder, true);
   }
 
-  initPaths(dirpath = this.file.folder) {
-    this.file.paths ||= [];
+  initSubtitles() {
+    this.video.subtitles = '';
 
-    fs.readdirSync(dirpath).forEach((filepath) => {
-      const fullpath = `${dirpath}/${filepath}`;
+    return getSubtitles({ videoID: this.id, lang: 'fr' }).then((captions) => {
+      captions.forEach((caption) => {
+        this.video.subtitles += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
+      });
 
-      return fs.statSync(fullpath).isDirectory()
-        ? this.initPaths(fullpath)
-        : this.file.paths.push(fullpath);
+      this.video.subtitles = this.video.subtitles.replace(/\s+/g, ' ');
     });
   }
 
-  init() {
-    this.epub = new EPUB(this.file.path);
+  async initVideo() {
+    this.video = {};
 
-    this.epub.on('error', async (error) => {
-      Logger.fatal(`${this.getInfos()} - INIT - ERRROR`, error);
+    await this.initVideoInfos();
 
-      process.exit(-1);
-    });
+    this.initVideoChapters();
 
-    this.epub.on('end', async () => {
-      this.initEpub();
-      this.initPaths();
+    await this.initSubtitles();
 
-      await this.promptCover();
-      await this.promptMetadata();
+    console.log(this.video);
 
-      this.emit('initiated');
-    });
+    process.exit();
+  }
 
-    this.epub.parse();
+  async init() {
+    await this.initVideo();
+
+    this.emit('initiated');
   }
 }
