@@ -8,6 +8,7 @@ import _ from 'lodash';
 import fs from 'fs';
 import zip from 'archiver';
 
+import sharp from 'sharp';
 import axios from 'axios';
 import prompt from 'prompt';
 import ytdl from 'ytdl-core';
@@ -90,11 +91,11 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getVideoName() {
-    return `${this.video.title}`;
+    return `${this.video.title} - ${this.video.creator}`;
   }
 
   getEpubPath() {
-    return `./library/Summarized/${this.getVideoName()}.epub`;
+    return `./library/Youtube/${this.getVideoName()}.epub`;
   }
 
   getTextHTML(html) {
@@ -219,14 +220,12 @@ export default class EpubInterface extends EventEmitter {
     fs.rmSync(this.constants.gitkeep);
   }
 
-  initBookPaths(dirpath = this.constants.tmp) {
-    this.pathes = [];
-
+  initPathes(dirpath = this.constants.tmp) {
     fs.readdirSync(dirpath).forEach((filepath) => {
-      const fullpath = `${dirpath}/${filepath}`;
+      const fullpath = `${dirpath}/${filepath}`.replace('//', '/');
 
       return fs.statSync(fullpath).isDirectory()
-        ? this.initBookPaths(fullpath)
+        ? this.initPathes(fullpath)
         : this.pathes.push(fullpath);
     });
   }
@@ -236,21 +235,15 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   async getThumbnail() {
-    return axios({ method: 'GET', url: this.video.thumbnail.url, responseType: 'stream' })
-      .then(
-        (response) =>
-          new Promise((resolve, reject) => {
-            const writeStream = fs.createWriteStream('tmp/epub/thumbnail.png');
+    try {
+      const response = await axios({ url: this.video.thumbnail.url, responseType: 'arraybuffer' });
 
-            response.data.pipe(writeStream);
+      await sharp(response.data).toFormat('png').toFile('tmp/epub/thumbnail.png');
 
-            writeStream.on('finish', resolve);
-            writeStream.on('error', reject);
-          })
-      )
-      .catch((err) => {
-        Logger.error(`${this.getInfos()} - GET_THUMBNAIL`, err);
-      });
+      Logger.info(`${this.getInfos()} - WRITE_THUMBNAIL`);
+    } catch (error) {
+      Logger.error(`${this.getInfos()} - GET_THUMBNAIL`, error);
+    }
   }
 
   async updateCover() {
@@ -446,7 +439,7 @@ export default class EpubInterface extends EventEmitter {
 
     await this.writeCover();
 
-    this.initBookPaths();
+    this.initPathes();
 
     this.writeEPUB();
   }
