@@ -8,19 +8,16 @@ import _ from 'lodash';
 import fs from 'fs';
 import zip from 'archiver';
 
+import axios from 'axios';
 import prompt from 'prompt';
+import ytdl from 'ytdl-core';
 import mime from 'mime-types';
-import inquirer from 'inquirer';
 import beautify from 'simply-beautiful';
 
-import { basename } from 'path';
 import { jsonrepair } from 'jsonrepair';
 import { EventEmitter } from 'events';
 import { minify } from 'html-minifier-terser';
 import { createCanvas, loadImage } from 'canvas';
-
-import ytdl from 'ytdl-core';
-
 import { getSubtitles } from 'youtube-captions-scraper';
 
 import Logger from '../../config/logger.js';
@@ -36,9 +33,9 @@ export default class EpubInterface extends EventEmitter {
       tmp: './tmp/epub/',
       default: './assets/epub/',
       html_folder: './tmp/epub/OPS/',
-      conclusion: `./tmp/epub/OPS/conclusion.xhtml`,
-      introduction: `./tmp/epub/OPS/introduction.xhtml`,
       chapter_template: `./tmp/epub/OPS/chapter_template.xhtml`,
+      cover_name: `/epub/cover.png`,
+      cover_type: `image/jpeg`,
       titlepage: './tmp/epub/titlepage.xhtml',
       database: './db/Database.json',
       gitkeep: './tmp/epub/.gitkeep',
@@ -50,10 +47,8 @@ export default class EpubInterface extends EventEmitter {
 
     this.trigger = 2500;
 
-    this.book = { chapters: [], queries: [], paths: [] };
-
-    this.conclusion = { response: undefined, count: 0, waiting: false, finish: false };
-    this.introduction = { response: undefined, count: 0, waiting: false, finish: false };
+    this.pathes = [];
+    this.queries = [];
 
     this.params = {
       user: params.user || 'Default',
@@ -71,15 +66,15 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   getInfos() {
-    return `EPUB (${this.getEpubName()})`;
+    return `EPUB (${this.getVideoName()})`;
   }
 
   getQuery() {
-    return _.find(Object.values(this.book.queries), (query) => !query.finish && !query.waiting);
+    return _.find(Object.values(this.queries), (query) => !query.finish && !query.waiting);
   }
 
   getStatus() {
-    const queries = Object.values(this.book.queries);
+    const queries = Object.values(this.queries);
 
     const finisheds = _.filter(queries, (query) => query.finish).length;
 
@@ -94,30 +89,12 @@ export default class EpubInterface extends EventEmitter {
     };
   }
 
-  getCover() {
-    return _.find(this.epub.manifest, (el) => {
-      if (!el['media-type'].includes('image')) return false;
-
-      return _.some(Object.values(el), (value) => {
-        if (typeof value !== 'string') return false;
-
-        return value.toLowerCase().includes('cover');
-      });
-    });
-  }
-
-  getEpubName() {
-    const { title, subtitle, creator } = this.metadata;
-
-    if (title && subtitle && creator) return `${title} - ${subtitle} | ${creator}`;
-
-    if (title && creator) return `${title} | ${creator}`;
-
-    return `${title}`;
+  getVideoName() {
+    return `${this.video.title}`;
   }
 
   getEpubPath() {
-    return `./library/Summarized/${this.getEpubName()}.epub`;
+    return `./library/Summarized/${this.getVideoName()}.epub`;
   }
 
   getTextHTML(html) {
@@ -142,97 +119,12 @@ export default class EpubInterface extends EventEmitter {
     return result.replace(/\s+/g, ' ');
   }
 
-  parseTextHTML(path) {
-    const html = this.readFile(path);
-
-    return this.getTextHTML(html);
-  }
-
-  /** **********************************************************************************************
-   **                                           Setters                                           **
-   ********************************************************************************************** */
-
-  setCover(cover) {
-    this.metadata.cover_id = cover.id;
-    this.metadata.cover_name = cover.href.match(/[^/]+$/)[0];
-    this.metadata.cover_path = cover.href;
-    this.metadata.cover_type = cover['media-type'];
-  }
-
   /** **********************************************************************************************
    **                                           Helpers                                           **
    ********************************************************************************************** */
 
-  hasChapters() {
-    return this.epub.flow.some((infos) => _.isNumber(infos?.order));
-  }
-
   hasFinish() {
-    return Object.values(this.book.queries).every((query) => query.finish);
-  }
-
-  hasContentLong(html) {
-    if (!html) return true;
-
-    const stats = this.getTextStats(this.getTextHTML(html));
-
-    if (stats.words < this.trigger / 2) return false;
-
-    return true;
-  }
-
-  hasContentShort(html) {
-    if (!html) return true;
-
-    const stats = this.getTextStats(this.getTextHTML(html));
-
-    if (stats.words > this.trigger / 20) return false;
-
-    if (stats.chars > 200) return false;
-
-    return true;
-  }
-
-  getContentPath(path, keywords) {
-    if (!path) return false;
-
-    for (const keyword of keywords) {
-      if (new RegExp(keyword, 'i').test(path)) return true;
-    }
-
-    return false;
-  }
-
-  getContentLevel1(html, keywords) {
-    for (const keyword of keywords) {
-      const regexPatterns = [`ROLE="[^"]*DOC-${keyword}[^"]*"`, `EPUB:TYPE="[^"]*${keyword}[^"]*"`];
-
-      for (const pattern of regexPatterns) {
-        if (new RegExp(pattern, 'i').test(html)) return true;
-      }
-    }
-
-    return false;
-  }
-
-  getContentLevel2(html, keywords) {
-    const text = this.getTextHTML(html).slice(0, 100).toUpperCase();
-
-    for (const keyword of keywords) {
-      const regexPatterns = [
-        `<(section|div|h1|h2|h3).*${keyword}.*/\\1>`,
-        `<TITLE.*${keyword}.*/TITLE>`,
-        `"${keyword}"`,
-      ];
-
-      if (text.includes(keyword)) return true;
-
-      for (const pattern of regexPatterns) {
-        if (new RegExp(pattern, 'i').test(html)) return true;
-      }
-    }
-
-    return false;
+    return Object.values(this.queries).every((query) => query.finish);
   }
 
   readFile(path) {
@@ -248,7 +140,7 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   getMetadataTitle() {
-    const title = this.metadata.title || this.epub.metadata.title;
+    const title = this.video.title;
 
     return title
       ? [
@@ -260,7 +152,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getMetadataSubtitle() {
-    const { subtitle } = this.metadata;
+    const { subtitle } = this.video;
 
     return subtitle
       ? [
@@ -272,21 +164,13 @@ export default class EpubInterface extends EventEmitter {
   }
 
   getMetadataCreator() {
-    const creator = this.metadata.creator || this.epub.metadata.creator;
+    const creator = this.video.creator;
 
     return creator ? `\t<dc:creator>${creator}</dc:creator>` : ``;
   }
 
-  getMetadataDate() {
-    const { date } = this.epub.metadata;
-
-    return date ? `\t<dc:date>${date}</dc:date>` : ``;
-  }
-
   getMetadataPublisher() {
-    const { publisher } = this.epub.metadata || 'The Babel Library';
-
-    return publisher ? `\t<dc:publisher>${publisher}</dc:publisher>` : ``;
+    return `\t<dc:publisher>The Babel Library</dc:publisher>`;
   }
 
   getMetadataLanguage() {
@@ -295,22 +179,8 @@ export default class EpubInterface extends EventEmitter {
     return iso ? `\t<dc:language>${iso}</dc:language>` : ``;
   }
 
-  getMetadataSerie() {
-    const { series_name } = this.metadata;
-
-    return series_name ? `\t<meta name="calibre:series" content="${series_name}"/>` : ``;
-  }
-
-  getMetadataSeriesIndex() {
-    const { series_volume } = this.metadata;
-
-    return series_volume ? `\t<meta name="calibre:series_index" content="${series_volume}"/>` : ``;
-  }
-
   getMetadataCover() {
-    return this.metadata.cover_id
-      ? `\t<meta name="cover" content="${this.metadata.cover_id}"/>`
-      : ``;
+    return `\t<meta name="cover" content="cover"/>`;
   }
 
   getMetadata() {
@@ -318,11 +188,8 @@ export default class EpubInterface extends EventEmitter {
       this.getMetadataTitle(),
       this.getMetadataSubtitle(),
       this.getMetadataCreator(),
-      this.getMetadataDate(),
       this.getMetadataPublisher(),
       this.getMetadataLanguage(),
-      this.getMetadataSerie(),
-      this.getMetadataSeriesIndex(),
       this.getMetadataCover(),
     ]).join('\n');
   }
@@ -353,12 +220,14 @@ export default class EpubInterface extends EventEmitter {
   }
 
   initBookPaths(dirpath = this.constants.tmp) {
+    this.pathes = [];
+
     fs.readdirSync(dirpath).forEach((filepath) => {
       const fullpath = `${dirpath}/${filepath}`;
 
       return fs.statSync(fullpath).isDirectory()
         ? this.initBookPaths(fullpath)
-        : this.book.paths.push(fullpath);
+        : this.pathes.push(fullpath);
     });
   }
 
@@ -366,13 +235,34 @@ export default class EpubInterface extends EventEmitter {
    **                                        Write: Cover                                         **
    ********************************************************************************************** */
 
-  async updateCover(path) {
-    const image = await loadImage(path);
+  async getThumbnail() {
+    return axios({ method: 'GET', url: this.video.thumbnail.url, responseType: 'stream' })
+      .then(
+        (response) =>
+          new Promise((resolve, reject) => {
+            const writeStream = fs.createWriteStream('tmp/epub/thumbnail.png');
+
+            response.data.pipe(writeStream);
+
+            writeStream.on('finish', resolve);
+            writeStream.on('error', reject);
+          })
+      )
+      .catch((err) => {
+        Logger.error(`${this.getInfos()} - GET_THUMBNAIL`, err);
+      });
+  }
+
+  async updateCover() {
+    const cover = await loadImage('tmp/epub/cover.png');
+    const logo = await loadImage('tmp/epub/thumbnail.png');
+    const youtube = await loadImage('tmp/epub/youtube.jpg');
 
     const canvas = createCanvas(800, 1280);
     const context = canvas.getContext('2d');
 
-    context.drawImage(image, 0, 0, 800, 1280);
+    context.drawImage(cover, 0, 0, 800, 1280);
+    context.drawImage(youtube, 0, 0, 800, 420);
 
     context.beginPath();
     context.moveTo(0, 0);
@@ -395,17 +285,42 @@ export default class EpubInterface extends EventEmitter {
     context.font = '20px "Times New Roman"';
     context.fillText(`-- Summarized --`, 142, 70);
 
-    const buffer = canvas.toBuffer(mime.lookup(path));
+    context.fillStyle = '#FFFFFF';
+    context.textAlign = 'center';
 
-    fs.writeFileSync(path, buffer);
+    let fontSize = 54;
+
+    context.font = `${fontSize}px "Times New Roman"`;
+
+    while (context.measureText(this.video.title).width > 700 && fontSize > 20) {
+      fontSize -= 2;
+      context.font = `${fontSize}px "Times New Roman"`;
+    }
+
+    context.fillText(this.video.title, 400, 1050 - fontSize);
+
+    fontSize = 54;
+    context.font = `${fontSize}px "Times New Roman"`;
+
+    while (context.measureText(this.video.creator).width > 500 && fontSize > 20) {
+      fontSize -= 2;
+      context.font = `${fontSize}px "Times New Roman"`;
+    }
+
+    context.fillText(this.video.creator, 400, 1050 + fontSize);
+
+    context.drawImage(logo, 0, 415, 860, 420);
+
+    const buffer = canvas.toBuffer(mime.lookup('tmp/epub/cover.png'));
+    fs.writeFileSync('tmp/epub/cover.png', buffer);
   }
 
   updateCoverOPF() {
     let file = this.readFile(this.constants.opf);
 
-    file = file.replace('COVER_PATH', this.metadata.cover_name);
+    file = file.replace('COVER_PATH', 'cover.png');
 
-    file = file.replace('COVER_TYPE', this.metadata.cover_type);
+    file = file.replace('COVER_TYPE', 'image/png');
 
     this.writeFile(this.constants.opf, file);
   }
@@ -413,23 +328,21 @@ export default class EpubInterface extends EventEmitter {
   updateCoverTitlepage() {
     let file = this.readFile(this.constants.titlepage);
 
-    file = file.replace('TITLE', this.epub.metadata.title);
+    file = file.replace('TITLE', this.video.title);
 
-    file = file.replace('COVER_PATH', this.metadata.cover_name);
+    file = file.replace('COVER_PATH', 'cover.png');
 
     this.writeFile(this.constants.titlepage, file);
   }
 
   async writeCover() {
-    const coverPath = this.file.paths.find((path) => path.endsWith(this.metadata.cover_path));
-
     this.updateCoverOPF();
 
     this.updateCoverTitlepage();
 
-    await this.updateCover(coverPath);
+    await this.getThumbnail();
 
-    fs.cpSync(coverPath, `${this.constants.tmp}${this.metadata.cover_name}`);
+    await this.updateCover();
   }
 
   /** **********************************************************************************************
@@ -463,39 +376,13 @@ export default class EpubInterface extends EventEmitter {
       );
     }
 
-    if (type === 'introduction') {
-      content = content.replace(
-        /<\/navMap>/,
-        `${[
-          `\t<navPoint playOrder="${order}" class="introduction">`,
-          `\t\t<navLabel><text>Introduction</text></navLabel>`,
-          `\t\t<content src="OPS/introduction.xhtml"/>`,
-          `\t</navPoint>`,
-        ].join('\n')}\n</navMap>`
-      );
-    }
-
-    if (type === 'conclusion') {
-      content = content.replace(
-        /<\/navMap>/,
-        `${[
-          `\t<navPoint playOrder="${order}" class="conclusion">`,
-          `\t\t<navLabel><text>Conclusion</text></navLabel>`,
-          `\t\t<content src="OPS/conclusion.xhtml"/>`,
-          `\t</navPoint>`,
-        ].join('\n')}\n</navMap>`
-      );
-    }
-
     this.writeFile(this.constants.ncx, content);
   }
 
   writeChapters() {
     let chapter = 1;
 
-    this.writeIntroduction(chapter);
-
-    this.book.queries.forEach((query) => {
+    this.queries.forEach((query) => {
       if (!query.finish || !query.response) return;
 
       let file = this.readFile(this.constants.chapter_template);
@@ -518,8 +405,6 @@ export default class EpubInterface extends EventEmitter {
       chapter += 1;
     });
 
-    this.writeConclusion(chapter);
-
     fs.rmSync(this.constants.chapter_template);
   }
 
@@ -540,56 +425,16 @@ export default class EpubInterface extends EventEmitter {
     output.on('close', () => {
       Logger.info(`${this.getInfos()} - WRITE_EPUB "${this.getEpubPath()}"`);
 
-      fs.cpSync(this.file.path, `./library/Summarized/Sources/${basename(this.file.path)}`);
-
       this.emit('writed');
     });
 
-    this.book.paths.forEach((path) => {
+    this.pathes.forEach((path) => {
       archive.append(fs.readFileSync(path), {
         name: path.replace(this.constants.tmp, ''),
       });
     });
 
     archive.finalize();
-  }
-
-  writeIntroduction(chapter) {
-    if (!this.introduction.finish || !this.introduction.response) return;
-
-    let file = this.readFile(this.constants.introduction);
-
-    file = file.replace(
-      /<body([^>]*)>([\s\S]*?)<\/body>/i,
-      beautify.html(`<body$1>\n${this.introduction.response}\n</body>`)
-    );
-
-    file = file.replace(/(\s*\n\s*)+/g, '\n');
-
-    this.writeFile(`${this.constants.html_folder}introduction.xhtml`, file);
-
-    this.writeFileInOPF('introduction');
-
-    this.writeFileInNCX(chapter, 'introduction');
-  }
-
-  writeConclusion(chapter) {
-    if (!this.conclusion.finish || !this.conclusion.response) return;
-
-    let file = this.readFile(this.constants.conclusion);
-
-    file = file.replace(
-      /<body([^>]*)>([\s\S]*?)<\/body>/i,
-      beautify.html(`<body$1>\n${this.conclusion.response}\n</body>`)
-    );
-
-    file = file.replace(/(\s*\n\s*)+/g, '\n');
-
-    this.writeFile(`${this.constants.html_folder}conclusion.xhtml`, file);
-
-    this.writeFileInOPF('conclusion');
-
-    this.writeFileInNCX(chapter + 1, 'conclusion');
   }
 
   async write() {
@@ -716,8 +561,8 @@ export default class EpubInterface extends EventEmitter {
       type: 'chapter',
       model: this.params.model,
       language: this.params.language,
-      title: this.epub.metadata.title,
-      author: this.epub.metadata.creator,
+      author: this.video.creator,
+      title: this.video.title,
       content: query.text,
     })
       .then((response) => {
@@ -736,185 +581,17 @@ export default class EpubInterface extends EventEmitter {
   }
 
   /** **********************************************************************************************
-   **                                         Introduction                                        **
-   ********************************************************************************************** */
-
-  getSubjectOPF() {
-    const path = _.find(this.file.paths, (el) => el.includes('.opf'));
-
-    const html = this.readFile(path);
-
-    const regex = /<dc:(subject|description)>([\s\S]*?)<\/dc:\1>/g;
-
-    const matches = [...html.matchAll(regex)];
-
-    const results = matches.map((match) => match[2]?.trim());
-
-    return results.join(' ') || '';
-  }
-
-  getIntroductionContent() {
-    let text = this.getSubjectOPF();
-
-    this.epub.flow.forEach((infos) => {
-      this.file.paths.forEach((path) => {
-        if (!path.includes(infos.href)) return;
-
-        const html = this.readFile(path);
-
-        text += this.getTextHTML(html);
-      });
-    });
-
-    return text;
-  }
-
-  async parseIntroductionRequest(data) {
-    try {
-      this.introduction.count += 1;
-
-      const response = this.parseResponseJSON(data);
-
-      if (!response?.content) {
-        this.introduction.response = undefined;
-        this.introduction.finish = this.introduction.count > 2;
-
-        Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, response);
-      } else {
-        this.introduction.response = await this.parseHTML(response.content).catch((err) => {
-          Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_INTRODUCTION`, err);
-
-          return undefined;
-        });
-
-        this.introduction.finish =
-          this.introduction.response !== undefined || this.introduction.count > 2;
-
-        Logger.info(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`);
-      }
-    } catch (error) {
-      Logger.error(`${this.getInfos()} - PARSE_INTRODUCTION_REQUEST`, error, data);
-    }
-  }
-
-  sendIntroductionRequest() {
-    this.introduction.waiting = true;
-
-    const content = this.getIntroductionContent();
-
-    Logger.info(`${this.getInfos()} - SEND_INTRODUCTION_REQUEST`);
-
-    sendRequest({
-      type: 'introduction',
-      model: this.params.model,
-      language: this.params.language,
-      title: this.epub.metadata.title,
-      author: this.epub.metadata.creator,
-      content,
-    })
-      .then((response) => {
-        this.parseIntroductionRequest(response);
-      })
-      .catch((err) => {
-        Logger.error(`${this.getInfos()} - SEND_INTRODUCTION_REQUEST`, err.response?.data || err);
-      })
-      .finally(() => {
-        this.introduction.waiting = false;
-      });
-  }
-
-  /** **********************************************************************************************
-   **                                         Conclusion                                        **
-   ********************************************************************************************** */
-
-  getConclusionContent() {
-    let text = this.getSubjectOPF();
-
-    this.epub.flow.forEach((infos) => {
-      this.file.paths.forEach((path) => {
-        if (!path.includes(infos.href)) return;
-
-        const html = this.readFile(path);
-
-        text += this.getTextHTML(html);
-      });
-    });
-
-    return text;
-  }
-
-  async parseConclusionRequest(data) {
-    try {
-      this.conclusion.count += 1;
-
-      const response = this.parseResponseJSON(data);
-
-      if (!response?.content) {
-        this.conclusion.response = undefined;
-        this.conclusion.finish = this.conclusion.count > 2;
-
-        Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, response);
-      } else {
-        this.conclusion.response = await this.parseHTML(response.content).catch((err) => {
-          Logger.error(`${this.getInfos()} - PARSE_HTML_REQUEST_CONCLUSION`, err);
-
-          return undefined;
-        });
-
-        this.conclusion.finish =
-          this.conclusion.response !== undefined || this.conclusion.count > 2;
-
-        Logger.info(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`);
-      }
-    } catch (error) {
-      Logger.error(`${this.getInfos()} - PARSE_CONCLUSION_REQUEST`, error, data);
-    }
-  }
-
-  sendConclusionRequest() {
-    this.conclusion.waiting = true;
-
-    const content = this.getConclusionContent();
-
-    Logger.info(`${this.getInfos()} - SEND_CONCLUSION_REQUEST`);
-
-    sendRequest({
-      type: 'conclusion',
-      model: this.params.model,
-      language: this.params.language,
-      title: this.epub.metadata.title,
-      author: this.epub.metadata.creator,
-      content,
-    })
-      .then((response) => {
-        this.parseConclusionRequest(response);
-      })
-      .catch((err) => {
-        Logger.error(`${this.getInfos()} - SEND_CONCLUSION_REQUEST`, err.response?.data || err);
-      })
-      .finally(() => {
-        this.conclusion.waiting = false;
-      });
-  }
-
-  /** **********************************************************************************************
    **                                           Process                                           **
    ********************************************************************************************** */
 
   onProcessInterval() {
-    if (!this.introduction.finish && !this.introduction.waiting) {
-      this.sendIntroductionRequest();
-    } else if (!this.conclusion.finish && !this.conclusion.waiting) {
-      this.sendConclusionRequest();
-    } else {
-      this.sendSummarizeRequest();
+    this.sendSummarizeRequest();
 
-      if (!this.hasFinish()) return;
+    if (!this.hasFinish()) return;
 
-      this.emit('processed');
+    this.emit('processed');
 
-      this.stopProcessInterval();
-    }
+    this.stopProcessInterval();
   }
 
   stopProcessInterval() {
@@ -938,7 +615,7 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   addQuery() {
-    this.book.queries.push({
+    this.queries.push({
       text: '',
       response: null,
       count: 0,
@@ -948,7 +625,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   manageQuery(text) {
-    const query = this.book.queries[this.book.queries.length - 1];
+    const query = this.queries[this.queries.length - 1];
 
     const statsText = this.getTextStats(text);
     const statsQuery = this.getTextStats(query.text);
@@ -959,13 +636,13 @@ export default class EpubInterface extends EventEmitter {
 
     this.addQuery();
 
-    return this.book.queries[this.book.queries.length - 1];
+    return this.queries[this.queries.length - 1];
   }
 
   mergeQueries() {
     let last = null;
 
-    this.book.queries.forEach((query) => {
+    this.queries.forEach((query) => {
       if (last?.finish === false && query.stats.words < this.trigger / 3) {
         last.text += query.text;
         last.stats = this.getTextStats(last.text);
@@ -988,13 +665,13 @@ export default class EpubInterface extends EventEmitter {
 
     const result = [''];
 
-    text.split('.').forEach((sentence) => {
+    text.split(' ').forEach((sentence) => {
       const stats = this.getTextStats(result[result.length - 1]);
 
       if (stats.words >= trigger) {
-        result.push(`${sentence}.`);
+        result.push(`${sentence} `);
       } else {
-        result[result.length - 1] += ` ${sentence}.`;
+        result[result.length - 1] += ` ${sentence} `;
       }
     });
 
@@ -1004,44 +681,24 @@ export default class EpubInterface extends EventEmitter {
   parseQueries() {
     this.addQuery();
 
-    this.book.chapters.forEach((chapter) => {
-      if (_.isEmpty(chapter.sections)) return;
+    this.video.chapters.forEach((chapter) => {
+      let query = this.queries[this.queries.length - 1];
 
-      let query = this.book.queries[this.book.queries.length - 1];
+      query = this.manageQuery(chapter.text);
 
-      query = this.manageQuery(chapter.sections.join(''));
+      this.splitSection(chapter.text).forEach((subText) => {
+        query = this.manageQuery(subText);
 
-      chapter.sections.forEach((section) => {
-        this.splitSection(section).forEach((subText) => {
-          query = this.manageQuery(subText);
+        query.text += subText;
 
-          query.text += subText;
+        query.text = query.text.replace(/\s+/g, ' ');
 
-          query.text = query.text.replace(/\s+/g, ' ');
-
-          query.stats = this.getTextStats(query.text);
-        });
+        query.stats = this.getTextStats(query.text);
       });
     });
   }
 
   parse() {
-    let chapter = 0;
-
-    this.epub.flow.forEach((infos, index) => {
-      chapter = this.hasChapters() ? infos?.order || chapter : index;
-
-      this.book.chapters[chapter] ||= { chapter, sections: [] };
-
-      this.file.paths.forEach((path) => {
-        if (!path.includes(infos.href)) return;
-
-        const text = this.parseTextHTML(path, infos, true);
-
-        this.book.chapters[chapter].sections.push(text);
-      });
-    });
-
     this.parseQueries();
 
     this.mergeQueries();
@@ -1053,46 +710,20 @@ export default class EpubInterface extends EventEmitter {
    **                                        Init: Prompt                                         **
    ********************************************************************************************** */
 
-  promptCover() {
-    const cover = this.getCover();
-
-    if (cover) return this.setCover(cover);
-
-    return inquirer
-      .prompt([
-        {
-          type: 'list',
-          name: 'cover',
-          message: `[${new Date().toISOString()}]  PROMPT - Veuillez choisir une cover:`,
-          choices: _.filter(this.epub.manifest, (el) => el['media-type'].includes('image')).map(
-            (image) => ({
-              name: image.href,
-              value: { id: image.id, href: image.href },
-            })
-          ),
-        },
-      ])
-      .then((answers) => this.setCover(answers.cover));
-  }
-
   promptMetadata() {
     return new Promise((resolve) => {
       prompt.get(
         [
-          { name: 'title', description: 'Book title', default: this.epub.metadata.title },
-          { name: 'subtitle', description: 'Book subtitle', default: this.epub.metadata.subtitle },
-          { name: 'creator', description: 'Book creator', default: this.epub.metadata.creator },
-          { name: 'series_name', description: 'Book series name' },
-          { name: 'series_volume', description: 'Book series volume' },
+          { name: 'title', description: 'Video title', default: this.video.title },
+          { name: 'subtitle', description: 'Video subtitle', default: this.video.subtitle },
+          { name: 'creator', description: 'Video creator', default: this.video.creator },
         ],
         (_err, result) => {
-          this.metadata.title = `${result.title} (résumé)`;
-          this.metadata.subtitle = `Summarized by ${this.params.model}`;
-          this.metadata.creator = result.creator;
-          this.metadata.series_name = result.series_name;
-          this.metadata.series_volume = result.series_volume;
+          this.video.title = result.title;
+          this.video.subtitle = `Summarized by ${this.params.model}`;
+          this.video.creator = result.creator;
 
-          Logger.info(`${this.getInfos()} - INIT_METADATA`, this.metadata);
+          Logger.info(`${this.getInfos()} - INIT_METADATA`, this.video);
 
           resolve();
         }
@@ -1127,7 +758,17 @@ export default class EpubInterface extends EventEmitter {
       start: chap.start,
       stop: i < chapters.length - 1 ? chapters[i + 1].start : this.video.length,
       title: chap.title,
+      text: '',
     }));
+
+    if (_.isEmpty(this.video.chapters)) {
+      this.video.chapters.push({
+        start: 0,
+        stop: this.video.length,
+        title: this.video.title,
+        text: '',
+      });
+    }
   }
 
   async initVideoInfos() {
@@ -1135,6 +776,7 @@ export default class EpubInterface extends EventEmitter {
       const info = await ytdl.getBasicInfo(`https://www.youtube.com/watch?v=${this.id}`);
 
       this.video.title = info.player_response.videoDetails.title;
+      this.video.creator = info.player_response.videoDetails.author;
       this.video.length = Number(info.player_response.videoDetails.lengthSeconds);
       this.video.description = info.player_response.videoDetails.shortDescription;
       this.video.thumbnail = _.maxBy(
@@ -1142,19 +784,21 @@ export default class EpubInterface extends EventEmitter {
         'width'
       );
     } catch (error) {
-      console.error('Erreur lors de la récupération des infos :', error);
+      Logger.error(`${this.getInfos()} - INIT_VIDEO_INFOS`, error);
     }
   }
 
   initSubtitles() {
-    this.video.subtitles = '';
-
     return getSubtitles({ videoID: this.id, lang: 'fr' }).then((captions) => {
       captions.forEach((caption) => {
-        this.video.subtitles += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
-      });
+        this.video.chapters.forEach((chapter) => {
+          if (chapter.start < Number(caption.start) && Number(caption.start) < chapter.stop) {
+            chapter.text += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
 
-      this.video.subtitles = this.video.subtitles.replace(/\s+/g, ' ');
+            chapter.text = chapter.text.replace(/\s+/g, ' ');
+          }
+        });
+      });
     });
   }
 
@@ -1166,14 +810,12 @@ export default class EpubInterface extends EventEmitter {
     this.initVideoChapters();
 
     await this.initSubtitles();
-
-    console.log(this.video);
-
-    process.exit();
   }
 
   async init() {
     await this.initVideo();
+
+    await this.promptMetadata();
 
     this.emit('initiated');
   }
