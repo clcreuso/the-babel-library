@@ -46,7 +46,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.id = params.id;
 
-    this.trigger = 2500;
+    this.trigger = 2000;
 
     this.pathes = [];
     this.queries = [];
@@ -674,6 +674,8 @@ export default class EpubInterface extends EventEmitter {
         query.text = '';
         query.finish = true;
         query.stats = this.getTextStats(query.text);
+
+        Logger.info(`${this.getInfos()} - MERGE_QUERY`, { last: last.index, index: query.index });
       }
 
       last = query;
