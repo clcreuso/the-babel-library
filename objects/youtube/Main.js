@@ -302,7 +302,36 @@ export default class EpubInterface extends EventEmitter {
 
     context.fillText(this.video.creator, 400, 1050 + fontSize);
 
-    context.drawImage(logo, 0, 415, 860, 420);
+    const logoWidth = logo.width;
+    const logoHeight = logo.height;
+    const scale = Math.min(800 / logoWidth, 420 / logoHeight, 1);
+    const scaledWidth = logoWidth * scale;
+    const scaledHeight = logoHeight * scale;
+
+    const centerX = (canvas.width - scaledWidth) / 2;
+    const centerY = canvas.height / 3 + (canvas.height / 3 - scaledHeight) / 2;
+    const borderRadius = 40;
+
+    context.save();
+
+    context.shadowColor = 'rgba(255, 0, 0, 0.8)';
+    context.shadowBlur = 150;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+
+    context.beginPath();
+    context.roundRect(centerX, centerY, scaledWidth, scaledHeight, borderRadius + 20);
+    context.fill();
+
+    context.shadowColor = 'transparent';
+
+    context.beginPath();
+    context.roundRect(centerX, centerY, scaledWidth, scaledHeight, borderRadius);
+    context.clip();
+
+    context.drawImage(logo, centerX, centerY, scaledWidth, scaledHeight);
+
+    context.restore();
 
     const buffer = canvas.toBuffer(mime.lookup('tmp/epub/cover.png'));
     fs.writeFileSync('tmp/epub/cover.png', buffer);
@@ -556,6 +585,7 @@ export default class EpubInterface extends EventEmitter {
       language: this.params.language,
       author: this.video.creator,
       title: this.video.title,
+      part: `${query.index}/${this.queries.length}`,
       content: query.text,
     })
       .then((response) => {
@@ -614,6 +644,7 @@ export default class EpubInterface extends EventEmitter {
       count: 0,
       waiting: false,
       finish: false,
+      index: this.queries.length + 1,
     });
   }
 
@@ -658,7 +689,7 @@ export default class EpubInterface extends EventEmitter {
 
     const result = [''];
 
-    text.split(' ').forEach((sentence) => {
+    text.split(/\s+(?=what|when|i|je|tu\s)/i).forEach((sentence) => {
       const stats = this.getTextStats(result[result.length - 1]);
 
       if (stats.words >= trigger) {
@@ -716,7 +747,11 @@ export default class EpubInterface extends EventEmitter {
           this.video.subtitle = `Summarized by ${this.params.model}`;
           this.video.creator = result.creator;
 
-          Logger.info(`${this.getInfos()} - INIT_METADATA`, this.video);
+          Logger.info(`${this.getInfos()} - INIT_METADATA`, {
+            title: this.video,
+            subtitle: this.video.subtitle,
+            creator: this.video.creator,
+          });
 
           resolve();
         }
@@ -764,7 +799,7 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  async initVideoInfos() {
+  async initVideoInfos(retry = 0) {
     try {
       const info = await ytdl.getBasicInfo(`https://www.youtube.com/watch?v=${this.id}`);
 
@@ -776,23 +811,39 @@ export default class EpubInterface extends EventEmitter {
         info.player_response.videoDetails.thumbnail.thumbnails,
         'width'
       );
+
+      console.log(info.player_response.videoDetails.thumbnail.thumbnails);
     } catch (error) {
-      Logger.error(`${this.getInfos()} - INIT_VIDEO_INFOS`, error);
+      if (retry >= 3) {
+        Logger.fatal(`${this.getInfos()} - INIT_VIDEO_INFOS`, error);
+
+        process.exit();
+      } else {
+        await this.initVideoInfos(retry + 1);
+      }
     }
   }
 
-  initSubtitles() {
-    return getSubtitles({ videoID: this.id, lang: 'fr' }).then((captions) => {
-      captions.forEach((caption) => {
-        this.video.chapters.forEach((chapter) => {
-          if (chapter.start < Number(caption.start) && Number(caption.start) < chapter.stop) {
-            chapter.text += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
+  initSubtitles(lang = 'fr') {
+    return getSubtitles({ videoID: this.id, lang })
+      .then((captions) => {
+        captions.forEach((caption) => {
+          this.video.chapters.forEach((chapter) => {
+            if (chapter.start < Number(caption.start) && Number(caption.start) < chapter.stop) {
+              chapter.text += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
 
-            chapter.text = chapter.text.replace(/\s+/g, ' ');
-          }
+              chapter.text = chapter.text.replace(/\s+/g, ' ');
+            }
+          });
         });
+      })
+      .catch(() => {
+        if (lang === 'fr') {
+          return this.initSubtitles('en');
+        }
+
+        return undefined;
       });
-    });
   }
 
   async initVideo() {
