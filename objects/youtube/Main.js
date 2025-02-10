@@ -748,7 +748,7 @@ export default class EpubInterface extends EventEmitter {
           this.video.creator = result.creator;
 
           Logger.info(`${this.getInfos()} - INIT_METADATA`, {
-            title: this.video,
+            title: this.video.title,
             subtitle: this.video.subtitle,
             creator: this.video.creator,
           });
