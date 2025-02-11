@@ -53,8 +53,8 @@ export default class EpubInterface extends EventEmitter {
 
     this.params = {
       user: params.user || 'Default',
-      model: params.model || 'gpt-4o-2024-11-20',
       language: params.language || 'French',
+      model: params.model || 'gpt-4o-mini-2024-07-18',
     };
 
     this.timers = {
