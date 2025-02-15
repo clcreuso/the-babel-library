@@ -813,8 +813,6 @@ export default class EpubInterface extends EventEmitter {
         info.player_response.videoDetails.thumbnail.thumbnails,
         'width'
       );
-
-      console.log(info.player_response.videoDetails.thumbnail.thumbnails);
     } catch (error) {
       if (retry >= 3) {
         Logger.fatal(`${this.getInfos()} - INIT_VIDEO_INFOS`, error);
@@ -826,8 +824,12 @@ export default class EpubInterface extends EventEmitter {
     }
   }
 
-  initSubtitles(lang = 'fr') {
-    return getSubtitles({ videoID: this.id, lang })
+  initSubtitles(index = 0) {
+    const langs = ['en', 'fr', 'es', 'de', 'hi', 'pt', 'ru', 'ja', 'id', 'ar'];
+
+    if (!langs[index]) return false;
+
+    return getSubtitles({ videoID: this.id, lang: langs[index] })
       .then((captions) => {
         captions.forEach((caption) => {
           this.video.chapters.forEach((chapter) => {
@@ -839,13 +841,7 @@ export default class EpubInterface extends EventEmitter {
           });
         });
       })
-      .catch(() => {
-        if (lang === 'fr') {
-          return this.initSubtitles('en');
-        }
-
-        return undefined;
-      });
+      .catch(() => this.initSubtitles(index + 1));
   }
 
   async initVideo() {
