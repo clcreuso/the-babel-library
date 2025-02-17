@@ -825,9 +825,15 @@ export default class EpubInterface extends EventEmitter {
   }
 
   initSubtitles(index = 0) {
-    const langs = ['en', 'fr', 'es', 'de', 'hi', 'pt', 'ru', 'ja', 'id', 'ar'];
+    const langs = ['en', 'fr', 'es', 'de', 'hi', 'pt', 'ru', 'ja', 'id', 'ar', 'th'];
 
-    if (!langs[index]) return false;
+    if (!langs[index]) {
+      Logger.fatal(`${this.getInfos()} - INIT_SUBTITLES`);
+
+      process.exit();
+    }
+
+    Logger.info(`${this.getInfos()} - INIT_SUBTITLES`, langs[index]);
 
     return getSubtitles({ videoID: this.id, lang: langs[index] })
       .then((captions) => {
