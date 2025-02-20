@@ -1,5 +1,6 @@
 import Youtube from './objects/youtube/Main.js';
 import Summarize from './objects/summarize/Main.js';
+import Dictionary from './objects/dictionary/Main.js';
 import Rewrite from './objects/rewrite/interfaces/EPUB.js';
 import Translate from './objects/translate/interfaces/EPUB.js';
 
@@ -13,6 +14,8 @@ const getEpub = () => {
   if (process.argv[2] === '-s') return new Summarize({ path: process.argv[3] });
 
   if (process.argv[2] === '-y') return new Youtube({ id: process.argv[3] });
+
+  if (process.argv[2] === '-d') return new Dictionary({ theme: process.argv[3] });
 
   return new Translate({ path: process.argv[3] });
 };

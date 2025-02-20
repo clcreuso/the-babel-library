@@ -36,7 +36,6 @@ export default class EpubInterface extends EventEmitter {
       html_folder: './tmp/epub/OPS/',
       chapter_template: `./tmp/epub/OPS/chapter_template.xhtml`,
       cover_name: `/epub/cover.png`,
-      cover_type: `image/jpeg`,
       titlepage: './tmp/epub/titlepage.xhtml',
       database: './db/Database.json',
       gitkeep: './tmp/epub/.gitkeep',
@@ -608,13 +607,13 @@ export default class EpubInterface extends EventEmitter {
    ********************************************************************************************** */
 
   onProcessInterval() {
-    this.sendSummarizeRequest();
+    if (this.hasFinish()) {
+      this.emit('processed');
 
-    if (!this.hasFinish()) return;
-
-    this.emit('processed');
-
-    this.stopProcessInterval();
+      this.stopProcessInterval();
+    } else {
+      this.sendSummarizeRequest();
+    }
   }
 
   stopProcessInterval() {
