@@ -46,7 +46,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.id = params.id;
 
-    this.trigger = 2000;
+    this.trigger = 1000;
 
     this.pathes = [];
     this.queries = [];
@@ -825,7 +825,7 @@ export default class EpubInterface extends EventEmitter {
   }
 
   initSubtitles(index = 0) {
-    const langs = ['en', 'fr', 'es', 'de', 'hi', 'pt', 'ru', 'ja', 'id', 'ar', 'th'];
+    const langs = ['en', 'fr', 'es', 'de', 'hi', 'pt', 'ru', 'ja', 'id', 'ar', 'th', 'ro'];
 
     if (!langs[index]) {
       Logger.fatal(`${this.getInfos()} - INIT_SUBTITLES`);
