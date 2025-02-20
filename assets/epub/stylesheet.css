@@ -6,6 +6,7 @@
   top: 0;
   vertical-align: super;
 }
+
 .bodypp {
   display: block;
   font-size: 1em;
@@ -15,6 +16,7 @@
   margin: 0 5pt;
   padding: 0;
 }
+
 .calibre {
   display: block;
   font-size: 1em;
@@ -23,14 +25,17 @@
   padding-right: 0;
   margin: 0 5pt;
 }
+
 .calibre1 {
   display: block;
   margin: 0;
   padding: 0;
 }
+
 .calibre2 {
   display: block;
 }
+
 .calibre3 {
   display: block;
   font-size: 1.5em;
@@ -38,14 +43,17 @@
   line-height: 1.2;
   margin: 0.67em 0;
 }
+
 .calibre4 {
   display: block;
   list-style-type: decimal;
   margin: 1em 0;
 }
+
 .calibre5 {
   display: list-item;
 }
+
 .calibre6 {
   display: block;
   font-size: 1.375em;
@@ -53,6 +61,7 @@
   line-height: 1.2;
   margin: 0.83em 0;
 }
+
 .chstit {
   display: block;
   font-size: 1.125em;
@@ -60,6 +69,7 @@
   text-align: center;
   margin: 2em 1em 1em;
 }
+
 .citp-j {
   display: block;
   font-size: 1em;
@@ -68,6 +78,7 @@
   margin: 6px 1em 6px 12px;
   padding: 0;
 }
+
 .collec {
   display: block;
   font-size: 1em;
@@ -75,6 +86,7 @@
   margin: 0;
   padding: 0;
 }
+
 .cop {
   display: block;
   font-size: 1.125em;
@@ -82,15 +94,18 @@
   margin: 1em 1em 0;
   padding: 0;
 }
+
 .defnotesfin_tit {
   display: block;
   font-size: 1.5em;
   font-weight: bold;
   margin: 0.67em 0;
 }
+
 .email {
   border-bottom: currentColor solid 1px;
 }
+
 .epis {
   display: block;
   font-size: 0.75em;
@@ -100,6 +115,7 @@
   margin-right: 2em;
   text-align: right;
 }
+
 .epiv {
   display: block;
   font-size: 0.75em;
@@ -107,9 +123,11 @@
   margin: 18px 2em 0 12em;
   padding: 0;
 }
+
 .exer {
   display: block;
 }
+
 .fmp-j {
   display: block;
   font-size: 1em;
@@ -120,6 +138,7 @@
   text-indent: 1em;
   padding: 0;
 }
+
 .fmtit {
   display: block;
   font-size: 1.375em;
@@ -127,6 +146,7 @@
   text-align: center;
   margin: 2em 1em 1em;
 }
+
 .fmtocp {
   display: block;
   font-size: 1em;
@@ -134,42 +154,52 @@
   margin-right: 1em;
   text-align: left;
 }
+
 .imgpp {
   height: auto;
   max-height: 100%;
   max-width: 100%;
   width: auto;
 }
+
 .list {
   display: block;
   margin-left: 2em;
 }
+
 .mev {
   font-variant: small-caps;
 }
+
 .mev1 {
   font-style: italic;
 }
+
 .mev2 {
   font-size: 0.75em;
   vertical-align: 70%;
 }
+
 .mev3 {
   font-weight: bold;
 }
+
 .mev4 {
   font-size: 0.63636em;
   vertical-align: 70%;
 }
+
 .mev5 {
   font-style: italic;
   font-weight: bold;
 }
+
 .mev6 {
   font-size: 0.75em;
   font-weight: bold;
   vertical-align: 70%;
 }
+
 .niv1itemp-j {
   display: block;
   font-size: 1em;
@@ -178,6 +208,7 @@
   margin: 6px 1em 6px 0;
   padding: 0;
 }
+
 .niv1tit {
   display: block;
   font-size: 1em;
@@ -185,6 +216,7 @@
   text-align: left;
   margin: 2em 1em 1em;
 }
+
 .pagecopyright {
   display: block;
   font-size: 1em;
@@ -192,6 +224,7 @@
   margin: 0;
   padding: 4em 0 0;
 }
+
 .sectionpp {
   display: block;
   font-size: 1em;
@@ -206,6 +239,35 @@
   margin: 0;
   padding: 0;
 }
+
 .pcalibre:before {
-  content: "• ";
+  content: '• ';
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 1em;
+  line-height: 1.5;
+  text-align: left;
+}
+
+th,
+td {
+  border: 1px solid #000;
+  padding: 8px;
+}
+
+th {
+  background-color: #ddd;
+  font-weight: bold;
+}
+
+tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+tr:hover {
+  background-color: #e6e6e6;
 }
