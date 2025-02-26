@@ -45,7 +45,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.id = params.id;
 
-    this.trigger = 1000;
+    this.trigger = 1500;
 
     this.pathes = [];
     this.queries = [];
@@ -151,18 +151,6 @@ export default class EpubInterface extends EventEmitter {
       : ``;
   }
 
-  getMetadataSubtitle() {
-    const { subtitle } = this.video;
-
-    return subtitle
-      ? [
-          `\t<dc:title id="t2">${subtitle}</dc:title>`,
-          `\t<meta property="title-type" refines="#t2">subtitle</meta>`,
-          `\t<meta property="display-seq" refines="#t2">1</meta>`,
-        ].join('\n')
-      : ``;
-  }
-
   getMetadataCreator() {
     const creator = this.video.creator;
 
@@ -186,7 +174,6 @@ export default class EpubInterface extends EventEmitter {
   getMetadata() {
     return _.compact([
       this.getMetadataTitle(),
-      this.getMetadataSubtitle(),
       this.getMetadataCreator(),
       this.getMetadataPublisher(),
       this.getMetadataLanguage(),
@@ -241,6 +228,8 @@ export default class EpubInterface extends EventEmitter {
 
       Logger.info(`${this.getInfos()} - WRITE_THUMBNAIL`);
     } catch (error) {
+      fs.cpSync('assets/thumbnail.png', 'tmp/epub/thumbnail.png');
+
       Logger.error(`${this.getInfos()} - GET_THUMBNAIL`, error);
     }
   }
@@ -735,22 +724,23 @@ export default class EpubInterface extends EventEmitter {
    **                                        Init: Prompt                                         **
    ********************************************************************************************** */
 
+  sanitizeFilename(name) {
+    return name.replace(/[:/]/g, '-');
+  }
+
   promptMetadata() {
     return new Promise((resolve) => {
       prompt.get(
         [
           { name: 'title', description: 'Video title', default: this.video.title },
-          { name: 'subtitle', description: 'Video subtitle', default: this.video.subtitle },
           { name: 'creator', description: 'Video creator', default: this.video.creator },
         ],
         (_err, result) => {
-          this.video.title = result.title;
-          this.video.subtitle = `Summarized by ${this.params.model}`;
-          this.video.creator = result.creator;
+          this.video.title = this.sanitizeFilename(result.title);
+          this.video.creator = this.sanitizeFilename(result.creator);
 
           Logger.info(`${this.getInfos()} - INIT_METADATA`, {
             title: this.video.title,
-            subtitle: this.video.subtitle,
             creator: this.video.creator,
           });
 
