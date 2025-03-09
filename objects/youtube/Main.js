@@ -45,7 +45,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.id = params.id;
 
-    this.trigger = 1500;
+    this.trigger = 4000;
 
     this.pathes = [];
     this.queries = [];
@@ -839,6 +839,20 @@ export default class EpubInterface extends EventEmitter {
       .catch(() => this.initSubtitles(index + 1));
   }
 
+  initTrigger() {
+    let subtitle = '';
+
+    this.video.chapters.forEach((chapter) => {
+      subtitle += chapter.text;
+    });
+
+    const stats = this.getTextStats(subtitle);
+
+    this.trigger = Math.round((stats.words / Math.ceil(stats.words / this.trigger)) * 1.01);
+
+    Logger.info(`${this.getInfos()} - INIT_TRIGGER`, this.trigger);
+  }
+
   async initVideo() {
     this.video = {};
 
@@ -847,6 +861,8 @@ export default class EpubInterface extends EventEmitter {
     this.initVideoChapters();
 
     await this.initSubtitles();
+
+    this.initTrigger();
   }
 
   async init() {
