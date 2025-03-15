@@ -3,67 +3,91 @@ import Summarize from './objects/summarize/Main.js';
 import Dictionary from './objects/dictionary/Main.js';
 import Rewrite from './objects/rewrite/interfaces/EPUB.js';
 import Translate from './objects/translate/interfaces/EPUB.js';
-
 import Logger from './config/logger.js';
 
-const getEpub = () => {
-  if (process.argv[2] === '-r') return new Rewrite({ path: process.argv[3] });
-
-  if (process.argv[2] === '-t') return new Translate({ path: process.argv[3] });
-
-  if (process.argv[2] === '-s') return new Summarize({ path: process.argv[3] });
-
-  if (process.argv[2] === '-y') return new Youtube({ id: process.argv[3] });
-
-  if (process.argv[2] === '-d') return new Dictionary({ theme: process.argv[3] });
-
-  return new Translate({ path: process.argv[3] });
+const COMMANDS = {
+  '-r': Rewrite,
+  '-t': Translate,
+  '-s': Summarize,
+  '-y': Youtube,
+  '-d': Dictionary,
 };
 
-const epub = getEpub();
+class EPUBProcessor {
+  constructor() {
+    this.epub = null;
+  }
 
-const write = () => {
-  epub.on('writed', () => {
-    Logger.info('EPUB - WRITED');
+  createProcessor() {
+    const [, , command = '-t', argument] = process.argv;
 
-    process.exit();
-  });
+    if (!argument) {
+      throw new Error('Missing required argument');
+    }
 
-  epub.write();
-};
+    const ProcessorClass = COMMANDS[command] || Translate;
 
-const launch = () => {
-  epub.on('processed', () => {
-    Logger.info('EPUB - PROCESSED');
+    let options;
 
-    write();
-  });
+    switch (command) {
+      case '-y':
+        options = { id: argument };
+        break;
+      case '-d':
+        options = { theme: argument };
+        break;
+      default:
+        options = { path: argument };
+    }
 
-  epub.process();
-};
+    this.epub = new ProcessorClass(options);
+    return this;
+  }
 
-const parse = () => {
-  epub.on('parsed', () => {
-    Logger.info('EPUB - PARSED');
+  async processWithLogging(stage, action) {
+    return new Promise((resolve) => {
+      this.epub.on(stage, () => {
+        Logger.info(`EPUB - ${stage.toUpperCase()}`);
+        resolve();
+      });
+      action();
+    });
+  }
 
-    launch();
-  });
+  startStatusLogging() {
+    return setInterval(() => Logger.info(this.epub.getStatus()), 1000);
+  }
 
-  epub.parse();
-};
+  async run() {
+    try {
+      await this.processWithLogging('initiated', () => this.epub.init());
 
-const init = () => {
-  epub.on('initiated', () => {
-    Logger.info('EPUB - INITIATED');
+      const statusInterval = this.startStatusLogging();
 
-    setInterval(() => Logger.info(epub.getStatus()), 1000);
+      await this.processWithLogging('parsed', () => this.epub.parse());
+      await this.processWithLogging('processed', () => this.epub.process());
+      await this.processWithLogging('writed', () => this.epub.write());
 
-    parse();
-  });
+      clearInterval(statusInterval);
 
-  epub.init();
-};
+      Logger.info('Processing completed successfully');
+
+      process.exit(0);
+    } catch (error) {
+      Logger.error('Error during processing:', error);
+
+      process.exit(1);
+    }
+  }
+}
 
 (async () => {
-  init();
+  try {
+    const processor = new EPUBProcessor();
+
+    await processor.createProcessor().run();
+  } catch (error) {
+    Logger.error('Fatal error:', error.message);
+    process.exit(1);
+  }
 })();
