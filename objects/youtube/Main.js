@@ -45,7 +45,7 @@ export default class EpubInterface extends EventEmitter {
 
     this.id = params.id;
 
-    this.trigger = 4000;
+    this.trigger = 1000;
 
     this.pathes = [];
     this.queries = [];
@@ -53,7 +53,7 @@ export default class EpubInterface extends EventEmitter {
     this.params = {
       user: params.user || 'Default',
       language: params.language || 'French',
-      model: params.model || 'gpt-4o-mini-2024-07-18',
+      model: params.model || 'gpt-4.1-nano-2025-04-14',
     };
 
     this.timers = {

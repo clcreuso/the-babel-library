@@ -55,7 +55,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-4o-2024-08-06',
+      model: params.model || 'gpt-4.1-nano-2025-04-14',
     };
 
     this.metadata = params.metadata || {};
