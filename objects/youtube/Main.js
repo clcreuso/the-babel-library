@@ -53,7 +53,7 @@ export default class EpubInterface extends EventEmitter {
     this.params = {
       user: params.user || 'Default',
       language: params.language || 'French',
-      model: params.model || 'gpt-4.1-nano-2025-04-14',
+      model: params.model || 'gpt-5.4-nano-2026-03-17',
     };
 
     this.timers = {
@@ -655,6 +655,8 @@ export default class EpubInterface extends EventEmitter {
     let last = null;
 
     this.queries.forEach((query) => {
+      console.log(query);
+
       if (last?.finish === false && query.stats.words < this.trigger / 3) {
         last.text += query.text;
         last.stats = this.getTextStats(last.text);
@@ -826,7 +828,11 @@ export default class EpubInterface extends EventEmitter {
 
     return getSubtitles({ videoID: this.id, lang: langs[index] })
       .then((captions) => {
-        captions.forEach((caption) => {
+        if (_.isEmpty(captions)) {
+          return this.initSubtitles(index + 1);
+        }
+
+        return captions.forEach((caption) => {
           this.video.chapters.forEach((chapter) => {
             if (chapter.start < Number(caption.start) && Number(caption.start) < chapter.stop) {
               chapter.text += `${caption.text.replace(/\[[^\]]+\]\s*/g, '')} `;
@@ -848,7 +854,7 @@ export default class EpubInterface extends EventEmitter {
 
     const stats = this.getTextStats(subtitle);
 
-    this.trigger = Math.round((stats.words / Math.ceil(stats.words / this.trigger)) * 1.01);
+    this.trigger = Math.round((stats.words / Math.ceil(stats.words / this.trigger)) * 1.01) || 1000;
 
     Logger.info(`${this.getInfos()} - INIT_TRIGGER`, this.trigger);
   }

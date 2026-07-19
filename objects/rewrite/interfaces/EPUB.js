@@ -45,7 +45,7 @@ const USELESS_TAGS = [
   'ins',
   'u',
   's',
-  'span',
+  // 'span',
 ];
 
 export default class EpubInterface extends EventEmitter {
@@ -56,7 +56,7 @@ export default class EpubInterface extends EventEmitter {
       user: params.user || 'Toto',
       source: params.source || 'English',
       destination: params.destination || 'French',
-      model: params.model || 'gpt-4.1-nano-2025-04-14',
+      model: params.model || 'gpt-5.4-nano-2026-03-17',
     };
 
     this.metadata = params.metadata || {};
@@ -171,7 +171,7 @@ export default class EpubInterface extends EventEmitter {
       'ins',
       'u',
       's',
-      'span',
+      // 'span',
     ].includes(tag);
   }
 
