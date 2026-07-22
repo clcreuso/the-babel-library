@@ -37,15 +37,22 @@ python3 --version
 codex --version
 ```
 
-## Quick start
+## Quick start in Codex
 
-Clone the repository and run:
+Clone the repository and open its folder in Codex:
 
 ```sh
 git clone https://github.com/clcreuso/codex-epub-translator.git
 cd codex-epub-translator
-python3 epub_translate.py "/path/to/book.epub" French --profile fast
 ```
+
+Place the EPUB in the repository folder, then send this message in Codex:
+
+```text
+[translate_epub.md](translate_epub.md) "My Book.epub" French --profile fast
+```
+
+This is a Codex prompt, not a shell command. Codex reads the linked workflow, runs the Python pipeline, follows its progress, handles the editorial metadata pass, optionally localizes the cover, and returns the final EPUB.
 
 The project is created next to the input file:
 
@@ -60,10 +67,10 @@ books/Book title/
 
 The repository contains an empty `books/` directory through `books/.gitkeep`; every generated book project inside it remains ignored by Git.
 
-By default, the input EPUB outside `books/` is deleted only after `original.epub` has been copied and preparation has completed successfully. Add `--keep-source` if you want to retain it:
+By default, the input EPUB outside `books/` is deleted only after `original.epub` has been copied and preparation has completed successfully. Add `--keep-source` to the Codex prompt if you want to retain it:
 
-```sh
-python3 epub_translate.py "/path/to/book.epub" French --keep-source
+```text
+[translate_epub.md](translate_epub.md) "My Book.epub" French --profile fast --keep-source
 ```
 
 ## Profiles
@@ -78,22 +85,31 @@ Every setting can be overridden with `--workers`, `--batch-tokens`, `--repair-to
 
 ## Resume a run
 
-```sh
-python3 epub_translate.py "books/Book title/original.epub" French --resume
+Send the workflow another Codex message:
+
+```text
+[translate_epub.md](translate_epub.md) "books/Book title/original.epub" French --resume
 ```
 
 Completed translations are not recalculated. Invalid rows are retried in small repair batches, while valid rows from partial responses are retained.
 
 ## Custom glossary
 
-Pass a UTF-8 Markdown glossary when a book needs domain-specific terminology:
+Reference a UTF-8 Markdown glossary when a book needs domain-specific terminology:
 
-```sh
-python3 epub_translate.py "book.epub" French \
-  --glossary glossary.example.md
+```text
+[translate_epub.md](translate_epub.md) "My Book.epub" French --profile fast --glossary glossary.example.md
 ```
 
 The glossary content is included in the translation-memory version, so changing it does not silently reuse incompatible translations.
+
+## Direct Python usage
+
+The Python command is the lower-level interface used by the Codex workflow. It remains available for automation and debugging:
+
+```sh
+python3 epub_translate.py "My Book.epub" French --profile fast
+```
 
 ## Editorial metadata and cover
 

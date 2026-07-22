@@ -2,9 +2,13 @@
 
 ## Utilisation recommandée
 
-```sh
-python3 epub_translate.py "livre.epub" French
+Placer l’EPUB dans le même dossier que ce workflow, puis envoyer ce message dans Codex :
+
+```text
+[translate_epub.md](translate_epub.md) "Mon livre.epub" French --profile fast
 ```
+
+Il s’agit d’une instruction adressée à Codex, pas d’une commande de terminal. Codex lit ce fichier, exécute le pipeline, suit les workers jusqu’à la fin, effectue la passe éditoriale et restitue l’EPUB final.
 
 Chaque livre reçoit son propre dossier avec des noms de fichiers stables :
 
@@ -17,13 +21,13 @@ books/Livre/
 └── translation jobs fr/
 ```
 
-Le titre court du dossier est lu dans les métadonnées de l’EPUB. Il peut être imposé avec `--book-name` :
+Le titre court du dossier est lu dans les métadonnées de l’EPUB. Il peut être imposé directement dans le message :
 
-```sh
-python3 epub_translate.py "livre.epub" French --book-name "Titre court"
+```text
+[translate_epub.md](translate_epub.md) "Mon livre.epub" French --profile fast --book-name "Titre court"
 ```
 
-Une copie canonique nommée `original.epub` est rangée dans le dossier du livre et n’est jamais remplacée. Une fois la préparation entièrement réussie, le fichier d’entrée resté hors de `books/` est supprimé. Utiliser `--keep-source` pour le conserver exceptionnellement.
+Une copie canonique nommée `original.epub` est rangée dans le dossier du livre et n’est jamais remplacée. Une fois la préparation entièrement réussie, le fichier d’entrée resté hors de `books/` est supprimé. Ajouter `--keep-source` au message Codex pour le conserver exceptionnellement.
 
 Les guillemets extérieurs, caractères invisibles et parenthèses finales vides sont retirés du nom de dossier. Le titre final affiché par les liseuses est ensuite décidé par la passe éditoriale, indépendamment de ce nom technique.
 
@@ -43,6 +47,8 @@ Les opérations suivantes sont désormais réalisées une seule fois par un prog
 - reconstruction et contrôle ZIP.
 
 ## Étapes du pipeline
+
+Les commandes Python ci-dessous documentent les opérations internes que Codex pilote. Pour un usage normal, le message unique montré plus haut suffit.
 
 ### 1. Préparation
 
@@ -108,27 +114,24 @@ Le fichier `mimetype` est ajouté en premier sans compression, puis toutes les a
 
 ## Reprendre une traduction
 
-```sh
-python3 epub_translate.py "books/Livre/original.epub" French --resume
+```text
+[translate_epub.md](translate_epub.md) "books/Livre/original.epub" French --resume
 ```
 
 Les traductions déjà présentes dans `translations.jsonl` ne sont pas recalculées. Les segments identiques d’un même livre sont dédupliqués, et la mémoire partagée `books/.translation-memory/fr.json` réutilise ceux rencontrés dans les autres livres tout en tenant compte de la version du glossaire.
 
 ## Repartir proprement
 
-```sh
-python3 epub_translate.py "livre.epub" French --force
+```text
+[translate_epub.md](translate_epub.md) "livre.epub" French --profile fast --force
 ```
 
-Les anciens dossiers de travail sont archivés avec un horodatage avant la nouvelle extraction. Le fichier EPUB source reste intact.
+Les anciens dossiers de travail sont archivés avec un horodatage avant la nouvelle extraction. La copie canonique `books/Livre/original.epub` reste intacte.
 
 ## Réglages de vitesse
 
-```sh
-python3 epub_translate.py "livre.epub" French \
-  --profile fast \
-  --workers 10 \
-  --max-retries 2
+```text
+[translate_epub.md](translate_epub.md) "livre.epub" French --profile fast --workers 10 --max-retries 2
 ```
 
 - `--profile fast` utilise des lots de 6 000 tokens, des réparations de 1 200 tokens, dix workers et un raisonnement faible ;
