@@ -58,6 +58,8 @@ books/Book title/
 └── translation jobs fr/
 ```
 
+The repository contains an empty `books/` directory through `books/.gitkeep`; every generated book project inside it remains ignored by Git.
+
 By default, the input EPUB outside `books/` is deleted only after `original.epub` has been copied and preparation has completed successfully. Add `--keep-source` if you want to retain it:
 
 ```sh

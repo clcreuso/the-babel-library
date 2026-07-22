@@ -1,5 +1,6 @@
 # Book content and generated translation projects
-books/
+books/*
+!books/.gitkeep
 *.epub
 *.mobi
 *.azw3

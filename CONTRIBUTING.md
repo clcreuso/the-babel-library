@@ -17,7 +17,7 @@ Thank you for helping improve `codex-epub-translator`.
 
    ```sh
    git status --short
-   git ls-files | grep -E '\.(epub|mobi|azw3)$|^books/'
+   git ls-files | grep -E '\.(epub|mobi|azw3)$|^books/' | grep -v '^books/\.gitkeep$'
    ```
 
 ## Test data policy
