@@ -1,0 +1,31 @@
+# Book content and generated translation projects
+books/
+*.epub
+*.mobi
+*.azw3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*~
+
+# Local logs and secrets
+*.log
+.env
+.env.*
+!.env.example
