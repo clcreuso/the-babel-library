@@ -10,8 +10,8 @@ Please use GitHub's private vulnerability reporting for this repository. Do not 
 
 ## Security notes
 
-- EPUBs are untrusted ZIP archives. The pipeline rejects path traversal during extraction and encrypted/DRM-protected inputs.
+- EPUBs are untrusted ZIP archives. The pipeline rejects path traversal, suspicious decompression ratios, excessive archive sizes, and encrypted/DRM-protected inputs.
 - Translation workers run in a read-only sandbox and receive extracted text through standard input.
-- The input EPUB is deleted after successful preparation unless `--keep-source` is used.
+- An input EPUB outside `books/` is deleted only after successful preparation unless `--keep-source` is used. Inputs already located anywhere under a `books/` tree are never deleted automatically.
 - Book text is sent to Codex for translation. Do not process confidential or restricted material.
 - Never commit `books/`, EPUB files, generated prompts, reports, logs, or translation memory.

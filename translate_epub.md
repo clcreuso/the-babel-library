@@ -144,6 +144,8 @@ Les anciens dossiers de travail sont archivés avec un horodatage avant la nouve
 - `--glossary` utilise un glossaire Markdown UTF-8 propre au livre ou au domaine ;
 - `--keep-source` conserve le fichier EPUB d’entrée hors de `books/` après la préparation ;
 - `--max-retries` relance uniquement les segments invalides sous forme de micro-lots.
+- `--worker-timeout` limite chaque lot Codex à 1 800 secondes par défaut ; un dépassement est traité comme un lot à réparer ;
+- `--editorial-timeout` limite la relecture éditoriale à 600 secondes par défaut.
 
 ## Fichiers de suivi
 

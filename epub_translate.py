@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
+import html.entities
 import json
 import os
 import re
@@ -21,7 +22,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPF_NS = "http://www.idpf.org/2007/opf"
@@ -34,8 +35,20 @@ PROTECTED_CLASSES = {"pre", "prev", "pre-ex", "code-para", "programlisting", "sc
 TRANSLATABLE_ATTRS = {"alt", "title", "aria-label"}
 STRUCTURAL_ATTRS = {"id", "class", "href", "src", "style", "role", "type", "name", "epub:type"}
 PLACEHOLDER_RE = re.compile(r"⟦(?:OPEN|CLOSE|LOCK):\d+⟧")
-WORD_RE = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’_-]*")
+WORD_RE = re.compile(r"[^\W\d_]+(?:['’_-][^\W\d_]+)*", re.UNICODE)
+CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 INVISIBLE_METADATA_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
+HTML_ENTITY_RE = re.compile(r"&([A-Za-z][A-Za-z0-9]+);")
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+MAX_EPUB_MEMBERS = 20_000
+MAX_EPUB_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_MEMBER_COMPRESSION_RATIO = 1_000
+DEFAULT_WORKER_TIMEOUT = 30 * 60
+DEFAULT_EDITORIAL_TIMEOUT = 10 * 60
 
 
 LANGUAGES = {
@@ -141,11 +154,15 @@ def epub_book_title(epub: Path) -> str | None:
 
 
 def safe_book_name(value: str) -> str:
-    value = clean_metadata_text(value).replace("/", "-").replace(":", " -")
+    value = clean_metadata_text(value).replace("/", "-").replace("\\", "-").replace(":", " -")
     value = re.sub(r"\s*\((?:for|pour|by|par)?\s*\)\s*$", "", value, flags=re.I)
     value = value.strip(" \"'«»“”")
-    value = re.sub(r"[\x00-\x1f]", "", value).strip(" .")
-    return value[:100].rstrip() or "Untitled book"
+    value = re.sub(r"[\x00-\x1f<>\"|?*]", "", value).strip(" .")
+    value = re.sub(r"\.{2,}", ".", value)
+    value = value[:100].rstrip(" .") or "Untitled book"
+    if value.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+        value = f"_{value}"
+    return value
 
 
 def short_book_name(epub: Path) -> str:
@@ -219,30 +236,74 @@ def safe_extract(epub: Path, destination: Path) -> None:
     with zipfile.ZipFile(epub) as archive:
         if archive.testzip():
             raise RuntimeError("The source EPUB has a corrupt ZIP member")
+        infos = archive.infolist()
+        if len(infos) > MAX_EPUB_MEMBERS:
+            raise RuntimeError(f"EPUB contains too many ZIP members ({len(infos)})")
+        total_size = sum(info.file_size for info in infos)
+        if total_size > MAX_EPUB_UNCOMPRESSED_BYTES:
+            raise RuntimeError("EPUB uncompressed size exceeds the safety limit")
         root = destination.resolve()
-        for info in archive.infolist():
+        for info in infos:
+            member = info.filename.replace("\\", "/")
+            member_parts = [part for part in member.split("/") if part not in {"", "."}]
+            if (member.startswith("/") or re.match(r"^[A-Za-z]:", member)
+                    or any(part == ".." for part in member_parts)):
+                raise RuntimeError(f"Unsafe ZIP member: {info.filename}")
             target = (destination / info.filename).resolve()
             if target != root and root not in target.parents:
                 raise RuntimeError(f"Unsafe ZIP member: {info.filename}")
+            if (info.file_size > 10 * 1024 * 1024 and info.compress_size > 0
+                    and info.file_size / info.compress_size > MAX_MEMBER_COMPRESSION_RATIO):
+                raise RuntimeError(f"Suspicious ZIP compression ratio: {info.filename}")
         archive.extractall(destination)
 
 
-def register_namespaces(path: Path) -> None:
-    try:
-        for _, pair in ET.iterparse(path, events=("start-ns",)):
-            prefix, uri = pair
-            try:
-                ET.register_namespace(prefix or "", uri)
-            except ValueError:
-                pass
-    except ET.ParseError:
-        pass
+def expand_xhtml_entities(text: str) -> str:
+    """Replace common HTML named entities with XML-safe numeric references."""
+    xml_entities = {"amp", "lt", "gt", "quot", "apos"}
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in xml_entities:
+            return match.group(0)
+        value = html.entities.html5.get(name + ";")
+        if value is None:
+            return match.group(0)
+        return "".join(f"&#{ord(character)};" for character in value)
+
+    return HTML_ENTITY_RE.sub(replace, text)
+
+
+def read_xml_text(path: Path) -> str:
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    match = re.match(br"\s*<\?xml[^>]*encoding=[\"']([^\"']+)", raw[:256], re.I)
+    encoding = match.group(1).decode("ascii", "replace") if match else "utf-8"
+    return raw.decode(encoding)
+
+
+def register_namespaces_from_text(text: str) -> None:
+    for prefix, uri in re.findall(r"\sxmlns(?::([A-Za-z_][\w.-]*))?=[\"']([^\"']+)[\"']", text):
+        try:
+            ET.register_namespace(prefix or "", uri)
+        except ValueError:
+            pass
 
 
 def parse_xml(path: Path) -> ET.ElementTree:
-    register_namespaces(path)
-    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-    return ET.parse(path, parser=parser)
+    text = read_xml_text(path)
+    register_namespaces_from_text(text)
+    parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+    try:
+        root = ET.fromstring(text, parser=parser)
+    except ET.ParseError as original_error:
+        expanded = expand_xhtml_entities(text)
+        if expanded == text:
+            raise original_error
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+        root = ET.fromstring(expanded, parser=parser)
+    return ET.ElementTree(root)
 
 
 def find_package(original: Path) -> str:
@@ -323,6 +384,8 @@ def model_text(value: str) -> str:
 
 def natural_language_present(value: str) -> bool:
     text = PLACEHOLDER_RE.sub(" ", value)
+    if len(CJK_RE.findall(text)) >= 4:
+        return True
     words = WORD_RE.findall(text)
     return len(words) >= 2 and any(len(word) > 2 for word in words)
 
@@ -345,10 +408,7 @@ def make_segment_id(rel: str, kind: str, path: list[int], extra: str = "") -> st
 
 
 def extract_document_segments(path: Path, rel: str, media_type: str) -> list[dict]:
-    try:
-        tree = parse_xml(path)
-    except ET.ParseError:
-        return []
+    tree = parse_xml(path)
     root = tree.getroot()
     paths, parents = element_paths(root)
     candidates = {"text", "tspan"} if media_type == "image/svg+xml" else BLOCK_TAGS
@@ -490,7 +550,8 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
             raise RuntimeError("Encrypted/DRM-protected EPUBs are not supported by the fast pipeline")
     paths["root"].mkdir(parents=True, exist_ok=True)
     canonical_source = paths["source"]
-    remove_input_after_prepare = input_epub != canonical_source and not keep_input
+    input_is_in_books = any(part.casefold() == "books" for part in input_epub.parts)
+    remove_input_after_prepare = input_epub != canonical_source and not keep_input and not input_is_in_books
     if input_epub != canonical_source:
         if canonical_source.exists():
             if input_epub.read_bytes() != canonical_source.read_bytes():
@@ -502,9 +563,10 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
             shutil.copy2(input_epub, canonical_source)
     epub = canonical_source
     if resume and (paths["jobs"] / "segments.jsonl").exists():
+        project = json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
         if remove_input_after_prepare:
             input_epub.unlink()
-        return json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
+        return project
     existing = [paths["original"], paths["working"], paths["jobs"]]
     if any(path.exists() for path in existing):
         if not force:
@@ -528,7 +590,12 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
         if rel in excluded_serial_content:
             continue
         if media_type in {"application/xhtml+xml", "application/x-dtbook+xml", "image/svg+xml"}:
-            extracted = extract_document_segments(paths["original"] / rel, rel, media_type)
+            try:
+                extracted = extract_document_segments(paths["original"] / rel, rel, media_type)
+            except (ET.ParseError, UnicodeError) as exc:
+                error_report = {"file": rel, "media_type": media_type, "error": str(exc)}
+                write_json_atomic(paths["jobs"] / "preparation_error.json", error_report)
+                raise RuntimeError(f"Cannot parse translatable document {rel}: {exc}") from exc
             if extracted:
                 file_has_segments.add(rel)
                 segments.extend(extracted)
@@ -673,6 +740,38 @@ def load_memory(path: Path) -> dict[str, str]:
         return {}
 
 
+def merge_memory_atomic(path: Path, updates: dict[str, str], timeout: float = 30.0) -> dict[str, str]:
+    """Merge translation-memory entries while serializing concurrent writers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_name(f".{path.name}.lock")
+    deadline = time.monotonic() + timeout
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 300:
+                    lock.unlink()
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Timed out waiting for translation-memory lock {lock}")
+            time.sleep(0.05)
+    try:
+        current = load_memory(path)
+        current.update(updates)
+        write_json_atomic(path, current)
+        return current
+    finally:
+        os.close(descriptor)
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def load_translations(path: Path) -> dict[str, dict]:
     return {row["id"]: row for row in read_jsonl(path)}
 
@@ -780,7 +879,8 @@ def build_prompt(template: str, glossary: str, project: dict, batch: list[dict],
 
 def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary: str, batch_id: str,
                   batch: list[dict], reasoning_effort: str, attempt: int,
-                  repair_reasons: dict[str, str] | None = None) -> dict:
+                  repair_reasons: dict[str, str] | None = None,
+                  timeout: int = DEFAULT_WORKER_TIMEOUT) -> dict:
     suffix = "" if attempt == 0 else f"-retry{attempt}"
     prompt_path = paths["jobs"] / "prompts" / f"{batch_id}{suffix}.md"
     report_path = paths["jobs"] / "reports" / f"{batch_id}{suffix}.json"
@@ -795,8 +895,22 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
         "-o", str(report_path), "-",
     ]
     started = time.time()
-    with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
-        process = subprocess.run(command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr)
+    try:
+        with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
+            process = subprocess.run(
+                command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr, timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        error = f"codex exec timed out after {timeout} seconds"
+        return {
+            "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+            "exit_code": -1, "seconds": round(time.time() - started, 1),
+            "source_tokens_estimated": sum(estimate_tokens(row["source"]) for row in batch),
+            "prompt_tokens_estimated": estimate_tokens(prompt), "report": str(report_path),
+            "error": error, "response_errors": [], "translations": {},
+            "invalid": {row["id"]: error for row in batch},
+            "valid_segments": 0, "invalid_segments": len(batch),
+        }
     result = {
         "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
         "exit_code": process.returncode, "seconds": round(time.time() - started, 1),
@@ -827,7 +941,8 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
 
 
 def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_tokens: int,
-              max_retries: int, reasoning_effort: str) -> dict:
+              max_retries: int, reasoning_effort: str,
+              worker_timeout: int = DEFAULT_WORKER_TIMEOUT) -> dict:
     translation_started = time.time()
     project = json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
     segments = read_jsonl(paths["jobs"] / "segments.jsonl")
@@ -848,8 +963,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         if segment["id"] in completed:
             continue
         current_key = memory_key(segment, source_code, target_code, glossary_version)
-        legacy_key = memory_key(segment, source_code, target_code)
-        target = combined_memory.get(current_key, combined_memory.get(legacy_key))
+        target = combined_memory.get(current_key)
         if target is not None:
             completed[segment["id"]] = {"id": segment["id"], "target": target, "source": "memory"}
             memory_hits += 1
@@ -920,7 +1034,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
             futures = {
                 executor.submit(
                     run_one_batch, paths, project, template, glossary, batch_id, batch,
-                    reasoning_effort, attempt, reasons,
+                    reasoning_effort, attempt, reasons, worker_timeout,
                 ): (batch_id, batch)
                 for batch_id, batch, reasons in indexed_batches
             }
@@ -983,10 +1097,8 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         segment = segments_by_id.get(segment_id)
         if segment:
             memory_updates[memory_key(segment, source_code, target_code, glossary_version)] = row["target"]
-    local_memory.update(memory_updates)
-    global_memory.update(memory_updates)
-    write_json_atomic(paths["memory"], local_memory)
-    write_json_atomic(paths["global_memory"], global_memory)
+    merge_memory_atomic(paths["memory"], memory_updates)
+    merge_memory_atomic(paths["global_memory"], memory_updates)
     write_json_atomic(paths["jobs"] / "batch_results.json", results)
 
     wall_seconds = round(time.time() - translation_started, 1)
@@ -1042,8 +1154,74 @@ def apply_target_to_element(element: ET.Element, target: str, expected_tokens: l
         setattr(owner, field, value)
 
 
+def consume_doctype(text: str, start: int) -> int:
+    quote = ""
+    subset_depth = 0
+    index = start
+    while index < len(text):
+        character = text[index]
+        if quote:
+            if character == quote:
+                quote = ""
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            subset_depth += 1
+        elif character == "]" and subset_depth:
+            subset_depth -= 1
+        elif character == ">" and subset_depth == 0:
+            return index + 1
+        index += 1
+    return start
+
+
+def xml_prologue_extras(path: Path) -> list[str]:
+    """Keep a source document's DOCTYPE, leading comments and processing instructions."""
+    if not path.exists():
+        return []
+    text = read_xml_text(path)
+    position = 0
+    declaration = re.match(r"\s*<\?xml\b.*?\?>", text, re.I | re.S)
+    if declaration:
+        position = declaration.end()
+    extras: list[str] = []
+    while position < len(text):
+        whitespace = re.match(r"\s*", text[position:])
+        position += whitespace.end() if whitespace else 0
+        if text.startswith("<!--", position):
+            end = text.find("-->", position + 4)
+            if end < 0:
+                break
+            extras.append(text[position:end + 3])
+            position = end + 3
+        elif text.startswith("<?", position):
+            end = text.find("?>", position + 2)
+            if end < 0:
+                break
+            extras.append(text[position:end + 2])
+            position = end + 2
+        elif text[position:position + 9].casefold() == "<!doctype":
+            end = consume_doctype(text, position)
+            if end == position:
+                break
+            extras.append(text[position:end])
+            position = end
+        else:
+            break
+    return extras
+
+
 def write_tree(tree: ET.ElementTree, path: Path) -> None:
-    tree.write(path, encoding="utf-8", xml_declaration=True, short_empty_elements=True)
+    extras = xml_prologue_extras(path)
+    payload = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True,
+                          short_empty_elements=True)
+    if extras:
+        declaration_end = payload.find(b"?>") + 2
+        insertion = ("\n" + "\n".join(extras)).encode("utf-8")
+        payload = payload[:declaration_end] + insertion + payload[declaration_end:]
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_bytes(payload)
+    os.replace(temporary, path)
 
 
 def visible_text(element: ET.Element) -> str:
@@ -1198,16 +1376,32 @@ def find_cover_resource(root_dir: Path, opf_rel: str) -> str | None:
          if local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"),
         None,
     )
-    candidates = []
+    items = []
     for node in root.iter():
         if local_name(node.tag) != "item" or not node.attrib.get("href"):
             continue
         item_id = node.attrib.get("id", "")
-        properties = node.attrib.get("properties", "").split()
         href = unquote(node.attrib["href"])
-        if item_id == cover_id or "cover-image" in properties or "cover" in (item_id + " " + href).casefold():
-            candidates.append((opf_dir / href).as_posix())
-    return candidates[0] if candidates else None
+        items.append({
+            "id": item_id,
+            "href": href,
+            "rel": (opf_dir / href).as_posix(),
+            "media_type": node.attrib.get("media-type", ""),
+            "properties": node.attrib.get("properties", "").split(),
+        })
+    image_items = [item for item in items if item["media_type"].casefold().startswith("image/")]
+    if cover_id:
+        declared = next((item for item in image_items if item["id"] == cover_id), None)
+        if declared:
+            return declared["rel"]
+    property_cover = next((item for item in image_items if "cover-image" in item["properties"]), None)
+    if property_cover:
+        return property_cover["rel"]
+    heuristic = next(
+        (item for item in image_items if "cover" in f"{item['id']} {item['href']}".casefold()),
+        None,
+    )
+    return heuristic["rel"] if heuristic else None
 
 
 def source_editorial_context(paths: dict[str, Path], project: dict) -> dict:
@@ -1252,7 +1446,8 @@ def editorial_schema() -> dict:
         "additionalProperties": False,
         "required": [
             "title", "subtitle", "full_title", "title_sort", "creators", "publisher",
-            "publication_date", "description", "subjects", "cover_text", "notes",
+            "publication_date", "description", "subjects", "cover_text",
+            "front_matter_replacements", "notes",
         ],
         "properties": {
             "title": string, "subtitle": string, "full_title": string, "title_sort": string,
@@ -1263,6 +1458,14 @@ def editorial_schema() -> dict:
                 "type": "object", "additionalProperties": False,
                 "required": ["title", "subtitle", "author", "contributor"],
                 "properties": {"title": string, "subtitle": string, "author": string, "contributor": string},
+            },
+            "front_matter_replacements": {
+                "type": "array",
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["source", "target"],
+                    "properties": {"source": string, "target": string},
+                },
             },
             "notes": {"type": "array", "items": string},
         },
@@ -1292,10 +1495,24 @@ def validate_editorial_decision(payload: object) -> dict:
         if not isinstance(cover_text.get(key), str):
             raise ValueError(f"Editorial cover_text.{key} is missing or invalid")
         cover_text[key] = clean_metadata_text(cover_text[key])
+    replacements = payload.setdefault("front_matter_replacements", [])
+    if not isinstance(replacements, list):
+        raise ValueError("Editorial front_matter_replacements is invalid")
+    cleaned_replacements = []
+    for replacement in replacements:
+        if not isinstance(replacement, dict) or not isinstance(replacement.get("source"), str) \
+                or not isinstance(replacement.get("target"), str):
+            raise ValueError("Each front-matter replacement needs source and target strings")
+        source = clean_metadata_text(replacement["source"])
+        target = clean_metadata_text(replacement["target"])
+        if source and target:
+            cleaned_replacements.append({"source": source, "target": target})
+    payload["front_matter_replacements"] = cleaned_replacements
     return payload
 
 
-def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort: str, resume: bool) -> dict:
+def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort: str, resume: bool,
+                         timeout: int = DEFAULT_EDITORIAL_TIMEOUT) -> dict:
     editorial_dir = paths["jobs"] / "editorial"
     editorial_dir.mkdir(parents=True, exist_ok=True)
     context = source_editorial_context(paths, project)
@@ -1317,8 +1534,13 @@ def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort
         "--output-schema", str(schema_path), "-c", f'model_reasoning_effort="{reasoning_effort}"',
         "-o", str(decision_path), "-",
     ]
-    with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
-        process = subprocess.run(command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr)
+    try:
+        with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
+            process = subprocess.run(
+                command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr, timeout=timeout,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Editorial Codex review timed out after {timeout} seconds; see {log_path}") from exc
     if process.returncode != 0:
         raise RuntimeError(f"Editorial Codex review exited with {process.returncode}; see {log_path}")
     decision = validate_editorial_decision(json.loads(decision_path.read_text(encoding="utf-8")))
@@ -1343,19 +1565,28 @@ def set_or_create_meta(metadata: ET.Element, name: str, content: str) -> ET.Elem
     return node
 
 
-def replace_front_matter_labels(paths: dict[str, Path], decision: dict) -> list[str]:
+def replace_front_matter_labels(paths: dict[str, Path], project: dict, decision: dict) -> list[str]:
     changed = []
     replacements = {
-        "looks good to me": decision["title"],
-        "constructive code reviews": decision["subtitle"],
-        "foreword by scott hanselman": decision["cover_text"]["contributor"],
+        clean_metadata_text(item["source"]).strip('"\'«»').casefold(): item["target"]
+        for item in decision.get("front_matter_replacements", [])
     }
-    for rel in ("OEBPS/Text/title.html", "OEBPS/Text/titlepage.xhtml"):
+    source_opf = parse_xml(paths["original"] / project["opf"]).getroot()
+    source_title = next(
+        (clean_metadata_text("".join(node.itertext())) for node in source_opf.iter()
+         if local_name(node.tag) == "title" and namespace(node.tag) == DC_NS),
+        "",
+    )
+    if source_title:
+        replacements.setdefault(source_title.strip('"\'«»').casefold(), decision["full_title"])
+    candidate_files = [item["file"] for item in source_editorial_context(paths, project)["front_matter"]]
+    for rel in candidate_files:
         source_path, target_path = paths["original"] / rel, paths["working"] / rel
         if not source_path.exists() or not target_path.exists():
             continue
         source_tree, target_tree = parse_xml(source_path), parse_xml(target_path)
         source_nodes, target_nodes = list(source_tree.getroot().iter()), list(target_tree.getroot().iter())
+        file_changed = False
         for source, target in zip(source_nodes, target_nodes):
             for field in ("text", "tail"):
                 raw = getattr(source, field) or ""
@@ -1365,11 +1596,30 @@ def replace_front_matter_labels(paths: dict[str, Path], decision: dict) -> list[
                     leading = raw[:len(raw) - len(raw.lstrip())]
                     trailing = raw[len(raw.rstrip()):]
                     setattr(target, field, leading + replacement + trailing)
-            if local_name(source.tag) == "title" and clean_metadata_text("".join(source.itertext())).strip('"\'«»').casefold() == "looks good to me":
+                    file_changed = True
+            if (local_name(source.tag) == "title"
+                    and clean_metadata_text("".join(source.itertext())).strip('"\'«»').casefold() in replacements):
                 set_visible_text(target, decision["full_title"])
-        write_tree(target_tree, target_path)
-        changed.append(rel)
+                file_changed = True
+        if file_changed:
+            write_tree(target_tree, target_path)
+            changed.append(rel)
     return changed
+
+
+def sniff_image_media_type(path: Path) -> str | None:
+    data = path.read_bytes()[:512]
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if b"<svg" in data.lstrip(b"\xef\xbb\xbf\x00\t\r\n ").lower():
+        return "image/svg+xml"
+    return None
 
 
 def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: dict, cover_image: Path | None) -> dict:
@@ -1411,7 +1661,7 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
         if local_name(node.tag) == "meta" and "content" in node.attrib:
             node.attrib["content"] = clean_metadata_text(node.attrib["content"])
     write_tree(tree, opf_path)
-    changed_front_matter = replace_front_matter_labels(paths, decision)
+    changed_front_matter = replace_front_matter_labels(paths, project, decision)
     manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
     for row in manifest_rows:
         if row["relative_path"] in changed_front_matter and row["category"] == "preserve":
@@ -1438,6 +1688,18 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
             raise FileNotFoundError(cover_image)
         if cover_rel is None:
             raise RuntimeError("No cover image is identified in the OPF package")
+        items, _, _ = media_inventory(paths["working"], project["opf"])
+        expected_type = items.get(cover_rel, {}).get("media_type", "")
+        actual_type = sniff_image_media_type(cover_image)
+        equivalent_types = {"image/jpg": "image/jpeg", "image/pjpeg": "image/jpeg"}
+        expected_type = equivalent_types.get(expected_type.casefold(), expected_type.casefold())
+        actual_type = equivalent_types.get((actual_type or "").casefold(), (actual_type or "").casefold())
+        if not actual_type:
+            raise RuntimeError("The localized cover is not a recognized JPEG, PNG, GIF, WebP, or SVG image")
+        if expected_type and actual_type != expected_type:
+            raise RuntimeError(
+                f"Localized cover format {actual_type} does not match OPF media type {expected_type}"
+            )
         destination = paths["working"] / cover_rel
         shutil.copy2(cover_image, destination)
         cover_status = "localized"
@@ -1454,32 +1716,40 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
 
 
 def editorial(paths: dict[str, Path], reasoning_effort: str, resume: bool, cover_image: Path | None,
-              target_name: str | None = None, target_code: str | None = None) -> dict:
+              target_name: str | None = None, target_code: str | None = None,
+              timeout: int = DEFAULT_EDITORIAL_TIMEOUT) -> dict:
     project_path = paths["jobs"] / "project.json"
     if not project_path.exists():
         inferred_code = target_code or paths["working"].name.rsplit(" ", 1)[-1]
         inferred_name = target_name or resolve_language(inferred_code)[0]
         bootstrap_legacy_project(paths, inferred_name, inferred_code)
     project = json.loads(project_path.read_text(encoding="utf-8"))
-    decision = run_editorial_review(paths, project, reasoning_effort, resume)
+    decision = run_editorial_review(paths, project, reasoning_effort, resume, timeout)
     cover_prompt = (
         "Use case: text-localization\n"
-        "Asset type: French EPUB front cover\n"
-        "Primary request: Localize the existing English book cover into French. Replace only the reader-visible "
-        "English title, subtitle, and foreword credit; preserve the illustration, mustard-and-white split background, "
-        "composition, hierarchy, publisher logo, author identity, and overall print-design character.\n"
+        f"Asset type: {project['target_language']} EPUB front cover\n"
+        f"Primary request: Localize only the reader-visible wording on the existing front cover from "
+        f"{project['source_language']} into {project['target_language']}. Preserve the original artwork, composition, "
+        "typographic hierarchy, publisher marks, author identity, colors, crop, aspect ratio, and print-design character.\n"
         "Input image: edit target, the original EPUB cover.\n"
         f"Text (verbatim): title \"{decision['cover_text']['title']}\"; subtitle \"{decision['cover_text']['subtitle']}\"; "
         f"author \"{decision['cover_text']['author']}\"; contributor \"{decision['cover_text']['contributor']}\".\n"
-        "Constraints: all four text strings must be spelled exactly as supplied, with French accents; no added text; "
-        "no watermark; retain the MANNING mark unchanged; keep the original portrait aspect ratio and safe margins.\n"
-        "Avoid: altering the woman, flowers, clothing, logo, palette, crop, or adding decorative elements.\n"
+        f"Constraints: spell every supplied string exactly in {project['target_language']}; omit empty strings; "
+        "add no other wording or watermark; retain all publisher and brand marks unchanged; keep safe margins.\n"
+        "Avoid: changing any non-text image content, logo, palette, crop, or adding decorative elements.\n"
     )
     editorial_dir = paths["jobs"] / "editorial"
     (editorial_dir / "cover_prompt.md").write_text(cover_prompt, encoding="utf-8")
     result = apply_editorial_metadata(paths, project, decision, cover_image)
     result["reasoning_effort"] = reasoning_effort
     write_json_atomic(paths["jobs"] / "editorial" / "editorial_report.json", result)
+    for stale in (
+        paths["jobs"] / "validation.json",
+        paths["jobs"] / "final_report.json",
+        paths["final"],
+    ):
+        if stale.exists():
+            stale.unlink()
     return result
 
 
@@ -1542,6 +1812,14 @@ def apply(paths: dict[str, Path]) -> dict:
             sync_ncx(paths["original"] / rel, paths["working"] / rel, rel, heading_map, title, project["target_language_code"])
         elif media_type in {"application/xhtml+xml", "application/x-dtbook+xml"}:
             sync_xhtml_links(paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui)
+    for stale in (
+        paths["jobs"] / "editorial" / "editorial_report.json",
+        paths["jobs"] / "validation.json",
+        paths["jobs"] / "final_report.json",
+        paths["final"],
+    ):
+        if stale.exists():
+            stale.unlink()
     return {"applied_segments": len(segments), "files": len(by_file), "generated_serial": len(serial)}
 
 
@@ -1722,6 +2000,10 @@ def main() -> int:
     parser.add_argument("--batch-tokens", type=int)
     parser.add_argument("--repair-tokens", type=int)
     parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--worker-timeout", type=int, default=DEFAULT_WORKER_TIMEOUT,
+                        help="Maximum seconds allowed for each Codex translation batch")
+    parser.add_argument("--editorial-timeout", type=int, default=DEFAULT_EDITORIAL_TIMEOUT,
+                        help="Maximum seconds allowed for the Codex metadata review")
     parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"))
     parser.add_argument("--editorial-reasoning-effort", choices=("low", "medium", "high"), default="medium")
     parser.add_argument("--cover-image", type=Path, help="Localized cover image to install during the editorial stage")
@@ -1744,14 +2026,15 @@ def main() -> int:
                              args.keep_source, args.glossary)
             print_result("prepare", result)
         if args.stage in {"all", "translate"}:
-            result = translate(paths, workers, batch_tokens, repair_tokens, args.max_retries, reasoning_effort)
+            result = translate(paths, workers, batch_tokens, repair_tokens, args.max_retries, reasoning_effort,
+                               args.worker_timeout)
             print_result("translate", result)
         if args.stage in {"all", "apply"}:
             result = apply(paths)
             print_result("apply", result)
         if args.stage in {"all", "editorial"}:
             result = editorial(paths, args.editorial_reasoning_effort, args.resume, args.cover_image,
-                               target_name, target_code)
+                               target_name, target_code, args.editorial_timeout)
             print_result("editorial", result)
         if args.stage in {"all", "validate"}:
             result = validate(paths)

@@ -17,6 +17,8 @@ The translator extracts reader-visible text into balanced JSON batches, runs par
 - Translation memory shared across local books.
 - Separate editorial pass for title, subtitle, description, subjects, and metadata cleanup.
 - Optional localized cover installation; only the OPF-declared cover can be replaced.
+- EPUB 2 named-entity support with DOCTYPE and processing-instruction preservation.
+- Archive traversal, decompression-bomb, worker-timeout, and accidental-deletion safeguards.
 - XHTML/XML, resource inventory, spine, metadata, and ZIP validation.
 - EPUB-compatible archive ordering: uncompressed `mimetype` first.
 - Standard-library-only Python implementation.
@@ -81,7 +83,7 @@ By default, the input EPUB outside `books/` is deleted only after `original.epub
 | `standard` | 8 | ~6,000 tokens | low | General use |
 | `editorial` | 4 | ~3,500 tokens | medium | Smaller, more deliberate batches |
 
-Every setting can be overridden with `--workers`, `--batch-tokens`, `--repair-tokens`, `--max-retries`, and `--reasoning-effort`.
+Every setting can be overridden with `--workers`, `--batch-tokens`, `--repair-tokens`, `--max-retries`, and `--reasoning-effort`. Stalled model calls are bounded by `--worker-timeout` (30 minutes per batch) and `--editorial-timeout` (10 minutes) by default.
 
 ## Resume a run
 
@@ -130,7 +132,7 @@ python3 epub_translate.py "books/Book title/original.epub" French --stage valida
 python3 epub_translate.py "books/Book title/original.epub" French --stage build
 ```
 
-The cover step is intentionally constrained to the image explicitly identified as the cover in the OPF manifest. Other images remain preserved.
+The cover step is intentionally constrained to the image explicitly identified as the cover in the OPF manifest. Other images remain preserved. The replacement must use the same image format declared by the OPF package.
 
 ## Pipeline stages
 
