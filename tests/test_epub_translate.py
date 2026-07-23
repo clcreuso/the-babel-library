@@ -128,6 +128,21 @@ class FastEpubPipelineTests(unittest.TestCase):
             self.assertEqual(editorial["cover_status"], "localized")
             self.assertFalse((paths["jobs"] / "validation.json").exists())
             self.assertFalse(paths["final"].exists())
+            opf_path = paths["working"] / "content.opf"
+            broken_tree = pipeline.parse_xml(opf_path)
+            broken_meta = next(
+                node for node in broken_tree.getroot().iter()
+                if pipeline.local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+            )
+            broken_meta.attrib["content"] = "wrong-cover"
+            pipeline.write_tree(broken_tree, opf_path)
+            with self.assertRaisesRegex(RuntimeError, "Validation failed"):
+                pipeline.validate(paths)
+            broken_validation = json.loads(
+                (paths["jobs"] / "validation.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(any("cover metadata" in error for error in broken_validation["errors"]))
+            pipeline.editorial(paths, "medium", resume=True, cover_image=localized_cover)
             validation = pipeline.validate(paths)
             self.assertEqual(validation["errors"], [])
             result = pipeline.build(paths)
@@ -151,6 +166,16 @@ class FastEpubPipelineTests(unittest.TestCase):
                 opf = ET.fromstring(archive.read("content.opf"))
                 title = next(node for node in opf.iter() if pipeline.local_name(node.tag) == "title")
                 self.assertEqual(title.text, "Petit livre : conception objet")
+                cover_meta = next(
+                    node for node in opf.iter()
+                    if pipeline.local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+                )
+                cover_item = next(
+                    node for node in opf.iter()
+                    if pipeline.local_name(node.tag) == "item" and node.attrib.get("id") == "cover"
+                )
+                self.assertEqual(cover_meta.attrib["content"], "cover")
+                self.assertIn("cover-image", cover_item.attrib.get("properties", "").split())
                 self.assertEqual(archive.read("OEBPS/cover.jpg"), b"\xff\xd8\xfflocalized-cover")
 
     def test_metadata_cleaning_removes_invisible_controls(self):
@@ -244,6 +269,212 @@ class FastEpubPipelineTests(unittest.TestCase):
             self.assertEqual(len(pipeline.load_translations(paths["jobs"] / "translations.jsonl")), stats["segments"])
             self.assertTrue(paths["global_memory"].is_file())
 
+    def test_resume_preserves_cumulative_translation_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+
+            def fake_run(_paths, _project, _template, _glossary, batch_id, batch,
+                         _reasoning_effort, attempt, _repair_reasons, _timeout):
+                return {
+                    "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+                    "exit_code": 0, "seconds": 2.0, "error": None, "response_errors": [],
+                    "translations": {row["id"]: row["source"] for row in batch}, "invalid": {},
+                }
+
+            with patch.object(pipeline, "run_one_batch", side_effect=fake_run):
+                first = pipeline.translate(
+                    paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                    max_retries=0, reasoning_effort="low",
+                )
+                resumed = pipeline.translate(
+                    paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                    max_retries=0, reasoning_effort="low",
+                )
+
+            self.assertEqual(first["initial_batches"], 1)
+            self.assertEqual(resumed["initial_batches"], 1)
+            self.assertEqual(resumed["runs"], 2)
+            self.assertEqual(resumed["last_run"]["initial_batches"], 0)
+            self.assertGreaterEqual(resumed["worker_seconds"], 2.0)
+            history = pipeline.read_jsonl(paths["jobs"] / "translation_run_history.jsonl")
+            self.assertEqual(len(history), 2)
+
+    def test_legacy_run_summary_migrates_with_distinct_run_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = Path(directory) / "jobs"
+            jobs.mkdir()
+            paths = {"jobs": jobs}
+            pipeline.write_json_atomic(
+                jobs / "translation_run.json",
+                {
+                    "status": "incomplete", "initial_batches": 3, "wall_seconds": 12.0,
+                    "attempts": [{"attempt": 0, "batches": 3}],
+                },
+            )
+            aggregate = pipeline.record_translation_run(
+                paths,
+                {
+                    "status": "complete", "initial_batches": 0, "wall_seconds": 0.2,
+                    "attempts": [],
+                },
+            )
+            history = pipeline.read_jsonl(jobs / "translation_run_history.jsonl")
+            self.assertEqual([row["run_number"] for row in history], [1, 2])
+            self.assertEqual(aggregate["initial_batches"], 3)
+            self.assertEqual(aggregate["attempts"][0]["run_number"], 1)
+
+    def test_corrupt_history_line_is_backed_up_and_valid_runs_are_salvaged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = Path(directory) / "jobs"
+            jobs.mkdir()
+            paths = {"jobs": jobs}
+            history_path = jobs / "translation_run_history.jsonl"
+            history_path.write_text(
+                '{"status":"incomplete","run_number":1,"initial_batches":2}\n'
+                '{broken-json\n',
+                encoding="utf-8",
+            )
+            aggregate = pipeline.record_translation_run(
+                paths,
+                {"status": "complete", "initial_batches": 0, "attempts": []},
+            )
+            self.assertEqual(aggregate["runs"], 2)
+            self.assertEqual(aggregate["history_recovery"]["discarded_lines"], [2])
+            self.assertTrue(Path(aggregate["history_recovery"]["backup"]).is_file())
+            self.assertEqual(len(pipeline.read_jsonl(history_path)), 2)
+
+    def test_terminal_codex_failure_stops_repair_waves(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            calls = []
+
+            def blocked_run(_paths, _project, _template, _glossary, batch_id, batch,
+                            _reasoning_effort, attempt, _repair_reasons, _timeout):
+                calls.append(attempt)
+                return {
+                    "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+                    "exit_code": 1, "seconds": 0.1, "error": "You've hit your usage limit.",
+                    "failure_class": "usage_limit", "retryable": False,
+                    "response_errors": [], "translations": {},
+                    "invalid": {row["id"]: "You've hit your usage limit." for row in batch},
+                }
+
+            with patch.object(pipeline, "run_one_batch", side_effect=blocked_run):
+                with self.assertRaisesRegex(RuntimeError, "paused by usage_limit"):
+                    pipeline.translate(
+                        paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                        max_retries=2, reasoning_effort="low",
+                    )
+
+            self.assertEqual(calls, [0])
+            stats = json.loads((paths["jobs"] / "translation_run.json").read_text(encoding="utf-8"))
+            self.assertEqual(stats["status"], "blocked_external")
+            self.assertEqual(stats["blocking_failure"]["kind"], "usage_limit")
+            self.assertEqual(stats["first_pass_invalid"], 0)
+            self.assertGreater(stats["external_blocked_segments"], 0)
+
+    def test_blocked_translation_can_resume_without_losing_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+
+            def blocked(_paths, _project, _template, _glossary, batch_id, batch,
+                        _reasoning_effort, attempt, _repair_reasons, _timeout):
+                return {
+                    "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+                    "exit_code": 1, "seconds": 0.1, "error": "Codex usage limit reached.",
+                    "failure_class": "usage_limit", "retryable": False,
+                    "response_errors": [], "translations": {},
+                    "invalid": {row["id"]: "Codex usage limit reached." for row in batch},
+                }
+
+            def succeeds(_paths, _project, _template, _glossary, batch_id, batch,
+                         _reasoning_effort, attempt, _repair_reasons, _timeout):
+                return {
+                    "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+                    "exit_code": 0, "seconds": 0.1, "error": None, "response_errors": [],
+                    "translations": {row["id"]: row["source"] for row in batch}, "invalid": {},
+                }
+
+            with patch.object(pipeline, "run_one_batch", side_effect=blocked):
+                with self.assertRaises(RuntimeError):
+                    pipeline.translate(
+                        paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                        max_retries=2, reasoning_effort="low",
+                    )
+            with patch.object(pipeline, "run_one_batch", side_effect=succeeds):
+                stats = pipeline.translate(
+                    paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                    max_retries=2, reasoning_effort="low",
+                )
+            self.assertEqual(stats["status"], "complete")
+            self.assertEqual(stats["runs"], 2)
+            self.assertGreater(stats["external_blocked_segments"], 0)
+            self.assertEqual(len(pipeline.read_jsonl(
+                paths["jobs"] / "translation_run_history.jsonl"
+            )), 2)
+
+    def test_apply_materializes_only_exact_local_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
+            representative = next(
+                row for row in segments
+                if row["file"] == "OEBPS/ch01.xhtml" and row["kind"] == "element"
+            )
+            alias = dict(representative)
+            alias["id"] = "synthetic-exact-alias"
+            pipeline.write_jsonl(paths["jobs"] / "segments.jsonl", [*segments, alias])
+            pipeline.write_jsonl(
+                paths["jobs"] / "translations.jsonl",
+                [{"id": row["id"], "target": row["source"], "source": "test"} for row in segments],
+            )
+
+            pipeline.apply(paths)
+
+            completed = pipeline.load_translations(paths["jobs"] / "translations.jsonl")
+            self.assertEqual(completed[alias["id"]]["target"], representative["source"])
+            self.assertEqual(completed[alias["id"]]["source"], "deduplicated-local")
+
+    def test_local_aliases_reject_invalid_or_merely_similar_representatives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
+            representative = next(row for row in segments if row["kind"] == "element")
+            exact_alias = {**representative, "id": "exact-alias"}
+            similar_alias = {
+                **representative,
+                "id": "similar-alias",
+                "source": representative["source"] + " Extra context.",
+            }
+            completed = {
+                representative["id"]: {
+                    "id": representative["id"],
+                    "target": "",
+                    "source": "manual",
+                }
+            }
+            added = pipeline.materialize_exact_translation_aliases(
+                paths, project, [representative, exact_alias, similar_alias], completed,
+            )
+            self.assertEqual(added, 0)
+            self.assertNotIn(exact_alias["id"], completed)
+            self.assertNotIn(similar_alias["id"], completed)
+
     def test_cover_selection_prioritizes_declared_image_and_rejects_non_images(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -261,6 +492,204 @@ class FastEpubPipelineTests(unittest.TestCase):
                 'content="cover-page"', 'content="fallback-cover"'
             ), encoding="utf-8")
             self.assertEqual(pipeline.find_cover_resource(root, "content.opf"), "fallback-cover.jpg")
+
+    def test_epub2_cover_path_is_normalized_to_manifest_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            opf = Path(directory) / "content.opf"
+            opf.write_text("""<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0"><metadata>
+<meta name="cover" content="Images/front.png"/></metadata><manifest>
+<item id="primary-art" href="Images/front.png" media-type="image/png"/>
+</manifest></package>""", encoding="utf-8")
+            self.assertEqual(
+                pipeline.find_cover_resource(Path(directory), "content.opf"),
+                "Images/front.png",
+            )
+            root = ET.parse(opf).getroot()
+            result = pipeline.normalize_cover_declaration(root, "content.opf", "Images/front.png")
+            cover_meta = next(
+                node for node in root.iter()
+                if pipeline.local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+            )
+            self.assertEqual(cover_meta.attrib["content"], "primary-art")
+            self.assertTrue(result["meta_updated"])
+            self.assertEqual(result["manifest_id"], "primary-art")
+
+    def test_epub3_cover_image_property_is_unique_and_authoritative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            opf = Path(directory) / "content.opf"
+            opf.write_text("""<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata>
+<meta name="cover" content="old-cover"/></metadata><manifest>
+<item id="old-cover" href="covers/legacy.jpg" media-type="image/jpeg"/>
+<item id="real-cover" href="covers/real.jpg" media-type="image/jpeg" properties="cover-image"/>
+</manifest></package>""", encoding="utf-8")
+            selected = pipeline.find_cover_resource(Path(directory), "content.opf")
+            self.assertEqual(selected, "covers/real.jpg")
+            root = ET.parse(opf).getroot()
+            result = pipeline.normalize_cover_declaration(root, "content.opf", selected)
+            property_ids = [
+                node.attrib.get("id")
+                for node in root.iter()
+                if pipeline.local_name(node.tag) == "item"
+                and "cover-image" in node.attrib.get("properties", "").split()
+            ]
+            cover_meta = next(
+                node for node in root.iter()
+                if pipeline.local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+            )
+            self.assertEqual(property_ids, ["real-cover"])
+            self.assertEqual(cover_meta.attrib["content"], "real-cover")
+            self.assertEqual(result["cover_image_properties_removed"], [])
+            self.assertEqual(pipeline.package_version(ET.fromstring('<package version=""/>')), 2.0)
+
+    def test_unsafe_cover_manifest_path_is_not_selected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            opf = Path(directory) / "content.opf"
+            opf.write_text("""<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0"><metadata>
+<meta name="cover" content="outside"/></metadata><manifest>
+<item id="outside" href="../outside.jpg" media-type="image/jpeg"/>
+</manifest></package>""", encoding="utf-8")
+            self.assertIsNone(pipeline.find_cover_resource(Path(directory), "content.opf"))
+            with self.assertRaisesRegex(RuntimeError, "escapes"):
+                pipeline.safe_resource_path(Path(directory), "../outside.jpg")
+
+    def test_raster_dimensions_are_detected_without_image_dependency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cover.png"
+            path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+                + (1200).to_bytes(4, "big") + (1387).to_bytes(4, "big")
+            )
+            self.assertEqual(pipeline.image_dimensions(path), (1200, 1387))
+            path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+                + (1200).to_bytes(4, "big") + (0).to_bytes(4, "big")
+            )
+            self.assertIsNone(pipeline.image_dimensions(path))
+            path.write_bytes(b"GIF89a" + (640).to_bytes(2, "little") + (960).to_bytes(2, "little"))
+            self.assertEqual(pipeline.image_dimensions(path), (640, 960))
+            path.write_bytes(
+                b"\xff\xd8"
+                + b"\xff\xe0\x00\x10" + b"\x00" * 14
+                + b"\xff\xc0\x00\x11\x08"
+                + (720).to_bytes(2, "big") + (480).to_bytes(2, "big")
+                + b"\x03" + b"\x00" * 9
+            )
+            self.assertEqual(pipeline.image_dimensions(path), (480, 720))
+            path.write_bytes(b"\xff\xd8\xff\xc0\x00")
+            self.assertIsNone(pipeline.image_dimensions(path))
+            path.write_bytes(
+                b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"NOPE"
+                + (1200).to_bytes(4, "big") + (1387).to_bytes(4, "big")
+            )
+            self.assertIsNone(pipeline.image_dimensions(path))
+
+    def test_explicit_editorial_decision_bypasses_codex(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            decision = {
+                "title": "Petit livre",
+                "subtitle": "Guide libre",
+                "full_title": "Petit livre : guide libre",
+                "title_sort": "Petit livre",
+                "creators": ["A. Autrice"],
+                "publisher": "Maison test",
+                "publication_date": "2025-01-01",
+                "description": "Une description éditoriale.",
+                "subjects": ["Programmation", "Conception", "Apprentissage"],
+                "cover_text": {
+                    "title": "Petit livre", "subtitle": "Guide libre",
+                    "author": "A. Autrice", "contributor": "",
+                },
+                "front_matter_replacements": [],
+                "notes": ["Décision humaine réutilisable."],
+            }
+            decision_path = root / "decision.json"
+            decision_path.write_text(json.dumps(decision), encoding="utf-8")
+            with patch.object(pipeline.subprocess, "run") as run:
+                loaded = pipeline.run_editorial_review(
+                    paths, project, "medium", resume=False, decision_source=decision_path,
+                )
+            run.assert_not_called()
+            self.assertEqual(loaded["full_title"], decision["full_title"])
+            saved = json.loads(
+                (paths["jobs"] / "editorial" / "metadata_decision.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved["notes"], decision["notes"])
+
+    def test_editorial_usage_limit_records_recovery_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+
+            def fake_process(*_args, **kwargs):
+                kwargs["stderr"].write(b"ERROR: You've hit your usage limit. Try again later.\n")
+                return SimpleNamespace(returncode=1)
+
+            with patch.object(pipeline.subprocess, "run", side_effect=fake_process):
+                with self.assertRaisesRegex(RuntimeError, "Editorial review paused by usage_limit"):
+                    pipeline.run_editorial_review(paths, project, "medium", resume=False)
+
+            failure = json.loads(
+                (paths["jobs"] / "editorial" / "editorial_failure.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(failure["status"], "blocked_external")
+            self.assertFalse(failure["retryable"])
+            self.assertIn("--editorial-decision", failure["recovery"])
+
+    def test_editorial_decision_rejects_unknown_fields_and_reports_invalid_json_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            invalid_path = root / "broken-decision.json"
+            invalid_path.write_text("{not-json", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, r"broken-decision\.json.*line 1"):
+                pipeline.run_editorial_review(
+                    paths, project, "medium", resume=False, decision_source=invalid_path,
+                )
+            payload = {
+                "title": "Titre", "subtitle": "", "full_title": "Titre", "title_sort": "Titre",
+                "creators": ["Autrice"], "publisher": "Maison", "publication_date": "2025",
+                "description": "Description", "subjects": ["Un", "Deux", "Trois"],
+                "cover_text": {"title": "Titre", "subtitle": "", "author": "Autrice", "contributor": ""},
+                "front_matter_replacements": [], "notes": [], "unexpected": True,
+            }
+            with self.assertRaisesRegex(ValueError, "unknown fields: unexpected"):
+                pipeline.validate_editorial_decision(payload)
+
+    def test_editorial_timeout_replaces_stale_failure_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            editorial_dir = paths["jobs"] / "editorial"
+            editorial_dir.mkdir(parents=True, exist_ok=True)
+            pipeline.write_json_atomic(
+                editorial_dir / "editorial_failure.json",
+                {"status": "blocked_external", "kind": "authentication"},
+            )
+            with patch.object(
+                pipeline.subprocess, "run", side_effect=subprocess.TimeoutExpired("codex", 3)
+            ):
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    pipeline.run_editorial_review(
+                        paths, project, "medium", resume=False, timeout=3,
+                    )
+            failure = json.loads(
+                (editorial_dir / "editorial_failure.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(failure["kind"], "timeout")
+            self.assertTrue(failure["retryable"])
 
     def test_epub2_named_entity_is_translated_and_doctype_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,6 +780,36 @@ class FastEpubPipelineTests(unittest.TestCase):
                 )
             self.assertIn("timed out", result["error"])
             self.assertEqual(set(result["invalid"]), {batch[0]["id"]})
+
+    def test_usage_limit_log_is_classified_as_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            batch = [pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")[0]]
+
+            def fake_process(*_args, **kwargs):
+                kwargs["stderr"].write(
+                    b"ERROR: You've hit your usage limit. Purchase more credits or try again later.\n"
+                )
+                return SimpleNamespace(returncode=1)
+
+            with patch.object(pipeline.subprocess, "run", side_effect=fake_process):
+                result = pipeline.run_one_batch(
+                    paths, project, "Translate.", "Preserve code.", "quota", batch, "low", 0,
+                )
+            self.assertEqual(result["failure_class"], "usage_limit")
+            self.assertFalse(result["retryable"])
+            self.assertIn("usage limit", result["error"])
+
+    def test_book_content_cannot_trigger_terminal_failure_classification(self):
+        result = pipeline.classify_codex_failure(
+            "streaming: If the server returns an error 401 Unauthorized, reconnect.\n"
+            "ERROR: stream disconnected before completion; retrying may help\n"
+        )
+        self.assertEqual(result["kind"], "worker_error")
+        self.assertTrue(result["retryable"])
 
     def test_malformed_worker_json_is_a_repairable_batch_failure(self):
         with tempfile.TemporaryDirectory() as directory:

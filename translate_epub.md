@@ -94,7 +94,20 @@ python3 epub_translate.py "livre.epub" French \
   --cover-image "cover-fr.jpg"
 ```
 
-Seule la ressource explicitement identifiée comme couverture dans l’OPF peut être remplacée. Toutes les autres images restent strictement préservées. Cette étape met aussi à jour la page de titre, le titre NCX, `calibre:title_sort` et `calibre:subtitle`. Elle préserve l’ISBN, les identifiants et les noms propres qui ne sont pas remis en cause par les sources du livre.
+Si l’appel éditorial automatique est indisponible, une décision produite par l’agent superviseur ou
+relue par un humain peut être injectée explicitement sans contourner la validation :
+
+```sh
+python3 epub_translate.py "livre.epub" French \
+  --stage editorial \
+  --editorial-decision "metadata-decision.json"
+```
+
+Seule la ressource de couverture sélectionnée à partir de l’OPF peut être remplacée. La déclaration
+est normalisée lorsqu’elle est mal formée, sans choisir une autre illustration. Toutes les autres
+images restent strictement préservées. Cette étape met aussi à jour la page de titre, le titre NCX,
+`calibre:title_sort` et `calibre:subtitle`. Elle préserve l’ISBN, les identifiants et les noms propres
+qui ne sont pas remis en cause par les sources du livre.
 
 ### 5. Validation
 
@@ -120,6 +133,21 @@ Le fichier `mimetype` est ajouté en premier sans compression, puis toutes les a
 
 Les traductions déjà présentes dans `translations.jsonl` ne sont pas recalculées. Les segments identiques d’un même livre sont dédupliqués, et la mémoire partagée `books/.translation-memory/fr.json` réutilise ceux rencontrés dans les autres livres tout en tenant compte de la version du glossaire.
 
+Chaque invocation est aussi ajoutée à `translation_run_history.jsonl`. Le résumé
+`translation_run.json` cumule les lots, le temps et les estimations de tokens : une reprise qui ne
+fait presque rien n’efface donc plus l’histoire de la traduction. Si une limite d’usage ou un
+problème d’authentification est reconnu avec certitude, le pipeline conserve le travail valide,
+s’arrête sans gaspiller les tentatives de réparation et indique qu’une reprise ultérieure est possible.
+Si une ligne de l’historique a été corrompue par une édition externe, les lignes valides sont
+récupérées et le JSONL original est conservé dans une sauvegarde horodatée `.corrupt-*`.
+
+Un seul processus pilote un dossier de livre à la fois. Le parallélisme est déjà interne à une
+exécution ; lancer deux étapes `translate` indépendantes sur le même dossier n’est pas pris en charge.
+
+Après une réparation humaine ou supervisée, `apply` peut compléter automatiquement les occurrences
+strictement identiques à partir des traductions déjà approuvées. Il ne généralise jamais une
+traduction à un segment seulement « ressemblant ».
+
 ## Repartir proprement
 
 ```text
@@ -141,6 +169,8 @@ Les anciens dossiers de travail sont archivés avec un horodatage avant la nouve
 - `--batch-tokens`, `--repair-tokens` et `--reasoning-effort` permettent de remplacer les valeurs du profil ;
 - `--editorial-reasoning-effort` règle uniquement la relecture des métadonnées (moyen par défaut) ;
 - `--cover-image` installe une couverture localisée pendant la passe éditoriale ;
+- `--editorial-decision` importe une décision éditoriale JSON validée par le même schéma, utile
+  lorsqu’un humain ou l’agent superviseur doit reprendre la main sans figer cette décision dans le code ;
 - `--glossary` utilise un glossaire Markdown UTF-8 propre au livre ou au domaine ;
 - `--keep-source` conserve le fichier EPUB d’entrée hors de `books/` après la préparation ;
 - `--max-retries` relance uniquement les segments invalides sous forme de micro-lots.
@@ -156,6 +186,7 @@ project.json
 segments.jsonl
 translations.jsonl
 translation_run.json
+translation_run_history.jsonl
 translation_manifest.jsonl
 translation_progress.md
 batches/
@@ -166,10 +197,21 @@ editorial/editorial_context.json
 editorial/metadata_decision.json
 editorial/cover_prompt.md
 editorial/editorial_report.json
+editorial/editorial_failure.json  # présent seulement après un échec
 validation.json
 final_report.json
 ```
 
 `translation_run.json` détaille le temps mural, le temps cumulé des workers, les lots initiaux, les micro-lots de réparation, les segments récupérés dans des réponses partiellement invalides et les échecs restants.
+
+`translation_run_history.jsonl` constitue la mémoire chronologique des reprises. En cas d’échec
+éditorial externe, `editorial/editorial_failure.json` conserve la cause et une piste de reprise.
+`editorial/metadata_decision.json` reste la mémoire éditoriale faisant autorité ; elle peut être
+réutilisée avec `--resume` ou fournie explicitement avec `--editorial-decision`.
+
+La déclaration de couverture est normalisée vers l’identifiant réel du manifeste EPUB 2 et, pour
+EPUB 3, la propriété `cover-image` est ajoutée si nécessaire. Le prompt de couverture mentionne les
+dimensions source. Une différence de dimensions ou de ratio est signalée pour relecture, mais ne
+bloque pas automatiquement une décision visuelle pertinente.
 
 La navigation EPUB, le NCX et les références de titres sont générés à partir des titres traduits validés plutôt que retraduits séparément. Cette table canonique évite les variations terminologiques entre chapitres et table des matières.

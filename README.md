@@ -13,10 +13,12 @@ The translator extracts reader-visible text into balanced JSON batches, runs par
 ## Highlights
 
 - Parallel, resumable translation with per-segment recovery.
+- Cumulative run history that survives no-op resumes and records external blockers separately.
 - Immutable placeholders protect markup, code, links, and identifiers.
 - Translation memory shared across local books.
 - Separate editorial pass for title, subtitle, description, subjects, and metadata cleanup.
-- Optional localized cover installation; only the OPF-declared cover can be replaced.
+- Optional localized cover installation; only the selected OPF cover can be replaced, and malformed
+  EPUB 2/3 cover declarations are normalized without changing the selected artwork.
 - EPUB 2 named-entity support with DOCTYPE and processing-instruction preservation.
 - Archive traversal, decompression-bomb, worker-timeout, and accidental-deletion safeguards.
 - XHTML/XML, resource inventory, spine, metadata, and ZIP validation.
@@ -95,6 +97,18 @@ Send the workflow another Codex message:
 
 Completed translations are not recalculated. Invalid rows are retried in small repair batches, while valid rows from partial responses are retained.
 
+Every invocation is appended to `translation_run_history.jsonl`. The summary in
+`translation_run.json` remains cumulative, so a quick no-op resume cannot erase the duration,
+batch count, or token estimates of the original run. Clear external blockers such as an exhausted
+usage allowance or missing authentication pause the run without wasting repair attempts; resume
+after the condition is resolved.
+If a history line was externally corrupted, valid rows are salvaged and the original JSONL file is
+kept as a timestamped `.corrupt-*` backup before the clean history is rewritten.
+
+Use one pipeline writer per book project at a time. Parallelism is already managed inside a
+translation run; launching two independent `translate` stages against the same book directory is
+not supported.
+
 ## Custom glossary
 
 Reference a UTF-8 Markdown glossary when a book needs domain-specific terminology:
@@ -104,6 +118,8 @@ Reference a UTF-8 Markdown glossary when a book needs domain-specific terminolog
 ```
 
 The glossary content is included in the translation-memory version, so changing it does not silently reuse incompatible translations.
+Glossary guidance is deliberately advisory: it helps the model remember terminology and distinctions
+while leaving room for context, established usage, quotations, interfaces, and wordplay.
 
 ## Direct Python usage
 
@@ -132,7 +148,21 @@ python3 epub_translate.py "books/Book title/original.epub" French --stage valida
 python3 epub_translate.py "books/Book title/original.epub" French --stage build
 ```
 
-The cover step is intentionally constrained to the image explicitly identified as the cover in the OPF manifest. Other images remain preserved. The replacement must use the same image format declared by the OPF package.
+If the Codex editorial call is unavailable, a human or supervising agent can provide the same
+schema-valid decision explicitly:
+
+```sh
+python3 epub_translate.py "books/Book title/original.epub" French \
+  --stage editorial --editorial-decision "/path/to/metadata-decision.json"
+```
+
+This is an explicit recovery path, not a hard-coded fallback: the decision is still validated,
+saved as project memory, and applied by the same deterministic stage.
+
+The cover step is intentionally constrained to the image selected from the OPF manifest. Other
+images remain preserved. The replacement must use the same declared image format. The generated
+cover prompt includes the source pixel geometry; differing dimensions or aspect ratio produce
+review warnings rather than silently distorting or rejecting otherwise useful artwork.
 
 ## Pipeline stages
 

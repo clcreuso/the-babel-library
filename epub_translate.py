@@ -11,12 +11,13 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
 import zipfile
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
@@ -49,6 +50,27 @@ MAX_EPUB_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_COMPRESSION_RATIO = 1_000
 DEFAULT_WORKER_TIMEOUT = 30 * 60
 DEFAULT_EDITORIAL_TIMEOUT = 10 * 60
+
+# Only unmistakably terminal failures belong here. Unknown Codex failures remain
+# retryable because model and transport behavior can evolve independently of this
+# pipeline.
+TERMINAL_CODEX_FAILURES = {
+    "usage_limit": (
+        "you've hit your usage limit",
+        "you have hit your usage limit",
+        "insufficient_quota",
+    ),
+    "authentication": (
+        "not logged in",
+        "authentication required",
+        "invalid api key",
+        "incorrect api key",
+    ),
+}
+TERMINAL_CODEX_DETAILS = {
+    "usage_limit": "Codex usage limit reached; resume after the allowance is available again.",
+    "authentication": "Codex authentication is unavailable; authenticate the CLI, then resume.",
+}
 
 
 LANGUAGES = {
@@ -90,6 +112,16 @@ Conserver les noms de produits, marques, langages de programmation, classes, mod
 variables, constantes, bibliothèques, commandes, fichiers, URL et API. Employer un français
 naturel, professionnel et cohérent. Ne traduire un terme technique que lorsqu’un équivalent
 français est établi dans le domaine concerné.
+
+## Repères de décision — non contraignants
+
+- Traiter les choix terminologiques déjà validés dans le livre comme une mémoire de cohérence,
+  sans forcer une traduction lorsque le contexte, une interface ou un jeu de mots justifie un écart.
+- Préférer l’usage réellement établi dans la communauté technique francophone à une traduction
+  littérale. Un terme anglais courant peut rester en anglais s’il est plus naturel et précis.
+- Préserver les distinctions conceptuelles du texte source ; ne pas fusionner deux notions seulement
+  parce qu’elles admettent parfois la même traduction française.
+- En cas d’ambiguïté, s’appuyer d’abord sur le chapitre, les exemples et le ton de l’auteur.
 """
 
 GENERIC_GLOSSARY = """# Shared translation glossary
@@ -778,6 +810,47 @@ def load_translations(path: Path) -> dict[str, dict]:
     return {row["id"]: row for row in read_jsonl(path)}
 
 
+def materialize_exact_translation_aliases(paths: dict[str, Path], project: dict,
+                                          segments: list[dict],
+                                          completed: dict[str, dict]) -> int:
+    """Fill only exact duplicate segments from already approved local translations."""
+    resolved: dict[str, dict] = {}
+    for segment in segments:
+        row = completed.get(segment["id"])
+        target = row.get("target") if row else None
+        if (
+            isinstance(target, str)
+            and normalize_space(target)
+            and PLACEHOLDER_RE.findall(target) == segment.get("placeholders", [])
+        ):
+            key = memory_key(segment, project["source_language_code"], project["target_language_code"])
+            resolved.setdefault(key, row)
+    added = 0
+    for segment in segments:
+        if segment["id"] in completed:
+            continue
+        key = memory_key(segment, project["source_language_code"], project["target_language_code"])
+        representative = resolved.get(key)
+        representative_target = representative.get("target") if representative else None
+        if (
+            isinstance(representative_target, str)
+            and normalize_space(representative_target)
+            and PLACEHOLDER_RE.findall(representative_target) == segment.get("placeholders", [])
+        ):
+            completed[segment["id"]] = {
+                "id": segment["id"],
+                "target": representative_target,
+                "source": "deduplicated-local",
+            }
+            added += 1
+    if added:
+        write_jsonl_atomic(
+            paths["jobs"] / "translations.jsonl",
+            [completed[key] for key in sorted(completed)],
+        )
+    return added
+
+
 def estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
@@ -879,6 +952,24 @@ def build_prompt(template: str, glossary: str, project: dict, batch: list[dict],
     )
 
 
+def classify_codex_failure(log_text: str) -> dict[str, object]:
+    """Classify only known terminal failures; leave unfamiliar errors retryable."""
+    tail = log_text.splitlines()[-80:]
+    for kind, markers in TERMINAL_CODEX_FAILURES.items():
+        for line in tail:
+            folded = line.casefold()
+            same_line_match = any(marker in folded for marker in markers)
+            diagnostic_prefix = re.match(r"^\s*(?:error|fatal)\s*:", line, flags=re.I)
+            structured_code = "insufficient_quota" in folded
+            if same_line_match and (diagnostic_prefix or structured_code):
+                return {
+                    "kind": kind,
+                    "retryable": False,
+                    "detail": TERMINAL_CODEX_DETAILS[kind],
+                }
+    return {"kind": "worker_error", "retryable": True, "detail": ""}
+
+
 def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary: str, batch_id: str,
                   batch: list[dict], reasoning_effort: str, attempt: int,
                   repair_reasons: dict[str, str] | None = None,
@@ -921,7 +1012,12 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
         "report": str(report_path), "error": None, "response_errors": [],
     }
     if process.returncode != 0:
-        result["error"] = f"codex exec exited with {process.returncode}"
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+        failure = classify_codex_failure(log_text)
+        result["failure_class"] = failure["kind"]
+        result["retryable"] = failure["retryable"]
+        detail = str(failure["detail"])
+        result["error"] = detail or f"codex exec exited with {process.returncode}"
         result["invalid"] = {row["id"]: result["error"] for row in batch}
         result["translations"] = {}
         return result
@@ -940,6 +1036,78 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
     result["valid_segments"] = len(result["translations"])
     result["invalid_segments"] = len(result["invalid"])
     return result
+
+
+def record_translation_run(paths: dict[str, Path], current: dict) -> dict:
+    """Persist each invocation and expose cumulative effort without losing resume history."""
+    history_path = paths["jobs"] / "translation_run_history.jsonl"
+    summary_path = paths["jobs"] / "translation_run.json"
+    history: list[dict] = []
+    discarded_history_lines: list[int] = []
+    history_backup = ""
+    if history_path.exists():
+        for line_number, line in enumerate(history_path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                discarded_history_lines.append(line_number)
+                continue
+            if isinstance(row, dict):
+                history.append(row)
+            else:
+                discarded_history_lines.append(line_number)
+        if discarded_history_lines:
+            backup = history_path.with_name(
+                f"{history_path.stem}.corrupt-{time.time_ns()}{history_path.suffix}"
+            )
+            shutil.copy2(history_path, backup)
+            history_backup = str(backup)
+    if not history and summary_path.exists():
+        legacy = json.loads(summary_path.read_text(encoding="utf-8"))
+        legacy_snapshot = legacy.get("last_run") if isinstance(legacy.get("last_run"), dict) else legacy
+        if isinstance(legacy_snapshot, dict) and legacy_snapshot:
+            legacy_snapshot = dict(legacy_snapshot)
+            legacy_snapshot.setdefault("run_number", 1)
+            history.append(legacy_snapshot)
+    snapshot = dict(current)
+    snapshot["run_number"] = max((int(row.get("run_number", 0)) for row in history), default=0) + 1
+    snapshot["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    history.append(snapshot)
+    write_jsonl_atomic(history_path, history)
+
+    aggregate = dict(snapshot)
+    sum_fields = (
+        "initial_batches", "repair_batches", "batch_attempts", "first_pass_invalid",
+        "repair_segments_submitted", "salvaged_valid_segments", "external_blocked_segments", "wall_seconds",
+        "worker_seconds", "source_tokens_submitted_estimated",
+        "prompt_tokens_submitted_estimated", "report_tokens_estimated",
+    )
+    for field in sum_fields:
+        aggregate[field] = round(sum(float(row.get(field, 0)) for row in history), 1)
+        if field not in {"wall_seconds", "worker_seconds"}:
+            aggregate[field] = int(aggregate[field])
+    aggregate["memory_hits"] = sum(int(row.get("memory_hits", 0)) for row in history)
+    aggregate["unique_pending_segments"] = max(
+        (int(row.get("unique_pending_segments", 0)) for row in history), default=0
+    )
+    aggregate["deduplicated"] = max((int(row.get("deduplicated", 0)) for row in history), default=0)
+    aggregate["attempts"] = [
+        {**attempt, "run_number": row.get("run_number", index)}
+        for index, row in enumerate(history, start=1)
+        for attempt in row.get("attempts", [])
+    ]
+    aggregate["runs"] = len(history)
+    aggregate["history_file"] = history_path.name
+    if discarded_history_lines:
+        aggregate["history_recovery"] = {
+            "discarded_lines": discarded_history_lines,
+            "backup": history_backup,
+        }
+    aggregate["last_run"] = snapshot
+    write_json_atomic(summary_path, aggregate)
+    return aggregate
 
 
 def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_tokens: int,
@@ -995,9 +1163,11 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
     repair_segments_submitted = 0
     salvaged_segments = 0
     first_pass_invalid = 0
+    external_blocked_segments = 0
     attempt_metrics: list[dict] = []
     pending = unique_pending
     pending_reasons: dict[str, str] = {}
+    blocking_failure: dict[str, object] | None = None
     template = Path(__file__).with_name("translate_epub_file.md").read_text(encoding="utf-8")
 
     for attempt in range(max_retries + 1):
@@ -1032,6 +1202,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         next_pending: dict[str, str] = {}
         wave_started = time.time()
         valid_in_wave = 0
+        blocked_in_wave = 0
         with ThreadPoolExecutor(max_workers=min(max(1, workers), len(indexed_batches))) as executor:
             futures = {
                 executor.submit(
@@ -1044,6 +1215,21 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                 batch_id, batch = futures[future]
                 try:
                     result = future.result()
+                except CancelledError:
+                    detail = (
+                        str(blocking_failure["detail"])
+                        if blocking_failure else "Cancelled after an external Codex blocker."
+                    )
+                    result = {
+                        "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
+                        "exit_code": -1, "seconds": 0.0, "error": detail, "response_errors": [],
+                        "failure_class": (
+                            blocking_failure["kind"] if blocking_failure else "external"
+                        ),
+                        "retryable": False,
+                        "translations": {}, "invalid": {row["id"]: detail for row in batch},
+                        "valid_segments": 0, "invalid_segments": len(batch),
+                    }
                 except Exception as exc:
                     result = {
                         "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
@@ -1064,6 +1250,17 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                 for segment_id, reason in invalid.items():
                     if segment_id in segments_by_id:
                         next_pending[segment_id] = reason
+                if result.get("retryable") is False:
+                    blocked_in_wave += len(invalid)
+                if result.get("retryable") is False and blocking_failure is None:
+                    blocking_failure = {
+                        "kind": result.get("failure_class", "external"),
+                        "detail": result.get("error", "Codex cannot continue this run"),
+                        "batch_id": batch_id,
+                    }
+                    for pending_future in futures:
+                        if pending_future is not future and not pending_future.done():
+                            pending_future.cancel()
                 results.append({k: v for k, v in result.items() if k not in {"translations", "invalid"}} | {
                     "valid_segments": len(translations),
                     "invalid_segments": len(invalid),
@@ -1071,17 +1268,21 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                 })
                 write_jsonl_atomic(translations_path, [completed[key] for key in sorted(completed)])
         if attempt == 0:
-            first_pass_invalid = len(next_pending)
+            first_pass_invalid = max(0, len(next_pending) - blocked_in_wave)
+        external_blocked_segments += blocked_in_wave
         attempt_metrics.append({
             "attempt": attempt,
             "batches": len(indexed_batches),
             "submitted_segments": len(pending),
             "valid_segments": valid_in_wave,
-            "invalid_segments": len(next_pending),
+            "invalid_segments": max(0, len(next_pending) - blocked_in_wave),
+            "blocked_segments": blocked_in_wave,
             "wall_seconds": round(time.time() - wave_started, 1),
         })
         pending = [segments_by_id[segment_id] for segment_id in next_pending]
         pending_reasons = next_pending
+        if blocking_failure is not None:
+            break
 
     failures = [segment["id"] for segment in pending]
     if not failures:
@@ -1109,7 +1310,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
     prompt_tokens_submitted = sum(int(row.get("prompt_tokens_estimated", 0)) for row in results)
     report_tokens_estimated = sum(int(row.get("report_tokens_estimated", 0)) for row in results)
     stats = {
-        "status": "incomplete" if failures else "complete",
+        "status": "blocked_external" if blocking_failure else ("incomplete" if failures else "complete"),
         "segments": len(segments),
         "unique_pending_segments": len(unique_pending),
         "already_completed": already_completed,
@@ -1119,6 +1320,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         "repair_batches": repair_batches,
         "batch_attempts": len(results),
         "first_pass_invalid": first_pass_invalid,
+        "external_blocked_segments": external_blocked_segments,
         "repair_segments_submitted": repair_segments_submitted,
         "salvaged_valid_segments": salvaged_segments,
         "workers": workers,
@@ -1133,9 +1335,32 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         "report_tokens_estimated": report_tokens_estimated,
         "attempts": attempt_metrics,
         "failures": failures,
+        "blocking_failure": blocking_failure,
     }
-    write_json_atomic(paths["jobs"] / "translation_run.json", stats)
+    stats = record_translation_run(paths, stats)
+    blocker_line = ""
+    if blocking_failure:
+        blocker_line = (
+            f"- External blocker: {blocking_failure['kind']} — "
+            f"{clean_metadata_text(str(blocking_failure['detail']))}\n"
+        )
+    (paths["jobs"] / "translation_progress.md").write_text(
+        "# Fast EPUB translation\n\n"
+        f"- Status: {stats['status']}\n"
+        f"- Completed segments: {len(completed)} / {len(segments)}\n"
+        f"- Recorded runs: {stats.get('runs', 1)}\n"
+        f"- Initial translation batches: {stats.get('initial_batches', 0)}\n"
+        f"- Repair batches: {stats.get('repair_batches', 0)}\n"
+        f"- Cumulative translation time: {stats.get('wall_seconds', 0)} seconds\n"
+        f"{blocker_line}",
+        encoding="utf-8",
+    )
     if failures:
+        if blocking_failure:
+            raise RuntimeError(
+                f"Translation paused by {blocking_failure['kind']}: {blocking_failure['detail']}. "
+                "Valid translations were preserved; resume when the external condition is resolved."
+            )
         preview = ", ".join(failures[:20])
         suffix = "…" if len(failures) > 20 else ""
         raise RuntimeError(f"Translation failed for {len(failures)} segment(s): {preview}{suffix}")
@@ -1451,6 +1676,26 @@ def translated_book_title(opf_path: Path) -> str:
     return visible_text(node) if node is not None else ""
 
 
+def package_version(root: ET.Element) -> float:
+    raw = root.attrib.get("version", "").strip()
+    match = re.match(r"^\d+(?:\.\d+)?", raw)
+    return float(match.group(0)) if match else 2.0
+
+
+def safe_resource_path(root_dir: Path, relative_path: str) -> Path:
+    """Resolve a manifest resource while keeping it inside the extracted EPUB."""
+    candidate_rel = Path(relative_path)
+    if candidate_rel.is_absolute():
+        raise RuntimeError(f"Unsafe absolute EPUB resource path: {relative_path}")
+    root = root_dir.resolve()
+    candidate = (root / candidate_rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"EPUB resource escapes the extracted root: {relative_path}") from exc
+    return candidate
+
+
 def find_cover_resource(root_dir: Path, opf_rel: str) -> str | None:
     root = parse_xml(root_dir / opf_rel).getroot()
     opf_dir = Path(opf_rel).parent
@@ -1465,19 +1710,39 @@ def find_cover_resource(root_dir: Path, opf_rel: str) -> str | None:
             continue
         item_id = node.attrib.get("id", "")
         href = unquote(node.attrib["href"])
+        rel = (opf_dir / href).as_posix()
+        try:
+            safe_resource_path(root_dir, rel)
+        except RuntimeError:
+            continue
         items.append({
             "id": item_id,
             "href": href,
-            "rel": (opf_dir / href).as_posix(),
+            "rel": rel,
             "media_type": node.attrib.get("media-type", ""),
             "properties": node.attrib.get("properties", "").split(),
         })
     image_items = [item for item in items if item["media_type"].casefold().startswith("image/")]
+    property_cover = next((item for item in image_items if "cover-image" in item["properties"]), None)
+    if package_version(root) >= 3 and property_cover:
+        return property_cover["rel"]
     if cover_id:
         declared = next((item for item in image_items if item["id"] == cover_id), None)
         if declared:
             return declared["rel"]
-    property_cover = next((item for item in image_items if "cover-image" in item["properties"]), None)
+        # Some EPUB 2 producers incorrectly store the image href instead of the
+        # manifest id. Treat that as a strong selection hint, then canonicalize it
+        # during the editorial stage.
+        declared_by_href = next(
+            (
+                item for item in image_items
+                if item["href"] == unquote(cover_id)
+                or item["rel"] == (opf_dir / unquote(cover_id)).as_posix()
+            ),
+            None,
+        )
+        if declared_by_href:
+            return declared_by_href["rel"]
     if property_cover:
         return property_cover["rel"]
     heuristic = next(
@@ -1485,6 +1750,108 @@ def find_cover_resource(root_dir: Path, opf_rel: str) -> str | None:
         None,
     )
     return heuristic["rel"] if heuristic else None
+
+
+def normalize_cover_declaration(root: ET.Element, opf_rel: str, cover_rel: str | None) -> dict:
+    """Canonicalize the selected cover without changing which image the pipeline chose."""
+    result = {
+        "resource": cover_rel,
+        "manifest_id": "",
+        "meta_updated": False,
+        "cover_image_property_added": False,
+        "cover_image_properties_removed": [],
+    }
+    if not cover_rel:
+        return result
+    opf_dir = Path(opf_rel).parent
+    cover_item = next(
+        (
+            node for node in root.iter()
+            if local_name(node.tag) == "item"
+            and node.attrib.get("id")
+            and node.attrib.get("media-type", "").casefold().startswith("image/")
+            and (opf_dir / unquote(node.attrib.get("href", ""))).as_posix() == cover_rel
+        ),
+        None,
+    )
+    if cover_item is None:
+        return result
+    cover_id = cover_item.attrib["id"]
+    result["manifest_id"] = cover_id
+    metadata = next((node for node in root.iter() if local_name(node.tag) == "metadata"), None)
+    if metadata is not None:
+        cover_meta = next(
+            (
+                node for node in metadata
+                if local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+            ),
+            None,
+        )
+        if cover_meta is None:
+            cover_meta = ET.SubElement(metadata, f"{{{OPF_NS}}}meta")
+            cover_meta.attrib["name"] = "cover"
+        if cover_meta.attrib.get("content") != cover_id:
+            cover_meta.attrib["content"] = cover_id
+            result["meta_updated"] = True
+    if package_version(root) >= 3:
+        removed_from = []
+        for node in root.iter():
+            if local_name(node.tag) != "item" or node is cover_item:
+                continue
+            properties = node.attrib.get("properties", "").split()
+            if "cover-image" not in properties:
+                continue
+            properties = [value for value in properties if value != "cover-image"]
+            if properties:
+                node.attrib["properties"] = " ".join(properties)
+            else:
+                node.attrib.pop("properties", None)
+            removed_from.append(node.attrib.get("id", ""))
+        result["cover_image_properties_removed"] = removed_from
+        properties = cover_item.attrib.get("properties", "").split()
+        if "cover-image" not in properties:
+            cover_item.attrib["properties"] = " ".join([*properties, "cover-image"])
+            result["cover_image_property_added"] = True
+    return result
+
+
+def image_dimensions(path: Path) -> tuple[int, int] | None:
+    """Read common raster dimensions without adding a runtime image dependency."""
+    data = path.read_bytes()
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and data[12:16] == b"IHDR":
+        width, height = struct.unpack(">II", data[16:24])
+        return (width, height) if width > 0 and height > 0 else None
+    if data.startswith((b"GIF87a", b"GIF89a")) and len(data) >= 10:
+        width, height = struct.unpack("<HH", data[6:10])
+        return (width, height) if width > 0 and height > 0 else None
+    if data.startswith(b"\xff\xd8"):
+        index = 2
+        start_of_frame = {
+            0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+            0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+        }
+        while index + 4 <= len(data):
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            while index < len(data) and data[index] == 0xFF:
+                index += 1
+            if index >= len(data):
+                break
+            marker = data[index]
+            index += 1
+            if marker in {0xD8, 0xD9}:
+                continue
+            if index + 2 > len(data):
+                break
+            length = struct.unpack(">H", data[index:index + 2])[0]
+            if length < 2 or index + length > len(data):
+                break
+            if marker in start_of_frame and length >= 7:
+                height, width = struct.unpack(">HH", data[index + 3:index + 7])
+                return (width, height) if width > 0 and height > 0 else None
+            index += length
+    return None
 
 
 def source_editorial_context(paths: dict[str, Path], project: dict) -> dict:
@@ -1558,6 +1925,10 @@ def editorial_schema() -> dict:
 def validate_editorial_decision(payload: object) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Editorial response is not a JSON object")
+    allowed_fields = set(editorial_schema()["required"])
+    unknown_fields = sorted(set(payload) - allowed_fields)
+    if unknown_fields:
+        raise ValueError(f"Editorial response contains unknown fields: {', '.join(unknown_fields)}")
     required_strings = ("title", "subtitle", "full_title", "title_sort", "publisher", "publication_date", "description")
     for key in required_strings:
         if not isinstance(payload.get(key), str):
@@ -1574,6 +1945,9 @@ def validate_editorial_decision(payload: object) -> dict:
     cover_text = payload.get("cover_text")
     if not isinstance(cover_text, dict):
         raise ValueError("Editorial cover_text is missing or invalid")
+    unknown_cover_fields = sorted(set(cover_text) - {"title", "subtitle", "author", "contributor"})
+    if unknown_cover_fields:
+        raise ValueError(f"Editorial cover_text contains unknown fields: {', '.join(unknown_cover_fields)}")
     for key in ("title", "subtitle", "author", "contributor"):
         if not isinstance(cover_text.get(key), str):
             raise ValueError(f"Editorial cover_text.{key} is missing or invalid")
@@ -1586,6 +1960,12 @@ def validate_editorial_decision(payload: object) -> dict:
         if not isinstance(replacement, dict) or not isinstance(replacement.get("source"), str) \
                 or not isinstance(replacement.get("target"), str):
             raise ValueError("Each front-matter replacement needs source and target strings")
+        unknown_replacement_fields = sorted(set(replacement) - {"source", "target"})
+        if unknown_replacement_fields:
+            raise ValueError(
+                "Editorial front-matter replacement contains unknown fields: "
+                + ", ".join(unknown_replacement_fields)
+            )
         source = clean_metadata_text(replacement["source"])
         target = clean_metadata_text(replacement["target"])
         if source and target:
@@ -1594,16 +1974,52 @@ def validate_editorial_decision(payload: object) -> dict:
     return payload
 
 
+def record_editorial_failure(editorial_dir: Path, kind: str, retryable: bool,
+                             detail: str, log_path: Path) -> dict:
+    failure_report = {
+        "status": "error" if retryable else "blocked_external",
+        "kind": kind,
+        "retryable": retryable,
+        "detail": clean_metadata_text(detail)[:300],
+        "log": str(log_path),
+        "recovery": "Resume later, or provide a schema-valid decision with --editorial-decision.",
+    }
+    write_json_atomic(editorial_dir / "editorial_failure.json", failure_report)
+    return failure_report
+
+
 def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort: str, resume: bool,
-                         timeout: int = DEFAULT_EDITORIAL_TIMEOUT) -> dict:
+                         timeout: int = DEFAULT_EDITORIAL_TIMEOUT,
+                         decision_source: Path | None = None) -> dict:
     editorial_dir = paths["jobs"] / "editorial"
     editorial_dir.mkdir(parents=True, exist_ok=True)
     context = source_editorial_context(paths, project)
     context_path = editorial_dir / "editorial_context.json"
     decision_path = editorial_dir / "metadata_decision.json"
     context_path.write_text(json.dumps(context, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if decision_source is not None:
+        source = decision_source.resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid editorial decision JSON in {source}: {exc.msg} "
+                f"at line {exc.lineno}, column {exc.colno}"
+            ) from exc
+        decision = validate_editorial_decision(payload)
+        write_json_atomic(decision_path, decision)
+        failure_path = editorial_dir / "editorial_failure.json"
+        if failure_path.exists():
+            failure_path.unlink()
+        return decision
     if resume and decision_path.exists():
-        return validate_editorial_decision(json.loads(decision_path.read_text(encoding="utf-8")))
+        decision = validate_editorial_decision(json.loads(decision_path.read_text(encoding="utf-8")))
+        failure_path = editorial_dir / "editorial_failure.json"
+        if failure_path.exists():
+            failure_path.unlink()
+        return decision
     schema_path = editorial_dir / "editorial_output.schema.json"
     schema_path.write_text(json.dumps(editorial_schema(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     template = Path(__file__).with_name("translate_epub_editorial.md").read_text(encoding="utf-8")
@@ -1623,11 +2039,30 @@ def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort
                 command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr, timeout=timeout,
             )
     except subprocess.TimeoutExpired as exc:
+        record_editorial_failure(
+            editorial_dir, "timeout", True,
+            f"Editorial Codex review timed out after {timeout} seconds.", log_path,
+        )
         raise RuntimeError(f"Editorial Codex review timed out after {timeout} seconds; see {log_path}") from exc
     if process.returncode != 0:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+        failure = classify_codex_failure(log_text)
+        record_editorial_failure(
+            editorial_dir, str(failure["kind"]), bool(failure["retryable"]),
+            str(failure["detail"]) or f"Editorial Codex review exited with {process.returncode}.",
+            log_path,
+        )
+        if failure["retryable"] is False:
+            raise RuntimeError(
+                f"Editorial review paused by {failure['kind']}: {failure['detail']}. "
+                "Resume later or provide --editorial-decision."
+            )
         raise RuntimeError(f"Editorial Codex review exited with {process.returncode}; see {log_path}")
     decision = validate_editorial_decision(json.loads(decision_path.read_text(encoding="utf-8")))
     write_json_atomic(decision_path, decision)
+    failure_path = editorial_dir / "editorial_failure.json"
+    if failure_path.exists():
+        failure_path.unlink()
     return decision
 
 
@@ -1707,6 +2142,7 @@ def sniff_image_media_type(path: Path) -> str | None:
 
 def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: dict, cover_image: Path | None) -> dict:
     opf_path = paths["working"] / project["opf"]
+    cover_rel = find_cover_resource(paths["working"], project["opf"])
     tree = parse_xml(opf_path)
     root = tree.getroot()
     metadata = next((node for node in root.iter() if local_name(node.tag) == "metadata"), None)
@@ -1743,6 +2179,7 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
             node.text = clean_metadata_text(node.text)
         if local_name(node.tag) == "meta" and "content" in node.attrib:
             node.attrib["content"] = clean_metadata_text(node.attrib["content"])
+    cover_declaration = normalize_cover_declaration(root, project["opf"], cover_rel)
     write_tree(tree, opf_path)
     changed_front_matter = replace_front_matter_labels(paths, project, decision)
     manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
@@ -1774,8 +2211,15 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
                 source_title, decision["full_title"],
             )
 
-    cover_rel = find_cover_resource(paths["working"], project["opf"])
     cover_status = "preserved"
+    cover_warnings: list[str] = []
+    source_cover_path = safe_resource_path(paths["original"], cover_rel) if cover_rel else None
+    source_dimensions = (
+        image_dimensions(source_cover_path)
+        if source_cover_path and source_cover_path.is_file()
+        else None
+    )
+    localized_dimensions = None
     if cover_image is not None:
         cover_image = cover_image.resolve()
         if not cover_image.is_file():
@@ -1794,7 +2238,22 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
             raise RuntimeError(
                 f"Localized cover format {actual_type} does not match OPF media type {expected_type}"
             )
-        destination = paths["working"] / cover_rel
+        localized_dimensions = image_dimensions(cover_image)
+        if source_dimensions and localized_dimensions and source_dimensions != localized_dimensions:
+            source_ratio = source_dimensions[0] / source_dimensions[1]
+            localized_ratio = localized_dimensions[0] / localized_dimensions[1]
+            ratio_delta = abs(localized_ratio - source_ratio) / source_ratio
+            cover_warnings.append(
+                "Localized cover dimensions differ from the source "
+                f"({localized_dimensions[0]}×{localized_dimensions[1]} instead of "
+                f"{source_dimensions[0]}×{source_dimensions[1]})."
+            )
+            if ratio_delta > 0.01:
+                cover_warnings.append(
+                    f"Localized cover aspect ratio differs from the source by {ratio_delta:.1%}; "
+                    "review crop and layout before publishing."
+                )
+        destination = safe_resource_path(paths["working"], cover_rel)
         shutil.copy2(cover_image, destination)
         cover_status = "localized"
         for row in manifest_rows:
@@ -1806,19 +2265,43 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
         "front_matter_files": changed_front_matter,
         "cover_resource": cover_rel,
         "cover_status": cover_status,
+        "cover_declaration": cover_declaration,
+        "cover_geometry": {
+            "source": list(source_dimensions) if source_dimensions else None,
+            "localized": list(localized_dimensions) if localized_dimensions else None,
+            "exact_match": (
+                source_dimensions == localized_dimensions
+                if source_dimensions and localized_dimensions else None
+            ),
+        },
+        "warnings": cover_warnings,
     }
 
 
 def editorial(paths: dict[str, Path], reasoning_effort: str, resume: bool, cover_image: Path | None,
               target_name: str | None = None, target_code: str | None = None,
-              timeout: int = DEFAULT_EDITORIAL_TIMEOUT) -> dict:
+              timeout: int = DEFAULT_EDITORIAL_TIMEOUT,
+              decision_source: Path | None = None) -> dict:
     project_path = paths["jobs"] / "project.json"
     if not project_path.exists():
         inferred_code = target_code or paths["working"].name.rsplit(" ", 1)[-1]
         inferred_name = target_name or resolve_language(inferred_code)[0]
         bootstrap_legacy_project(paths, inferred_name, inferred_code)
     project = json.loads(project_path.read_text(encoding="utf-8"))
-    decision = run_editorial_review(paths, project, reasoning_effort, resume, timeout)
+    decision = run_editorial_review(paths, project, reasoning_effort, resume, timeout, decision_source)
+    source_cover_rel = find_cover_resource(paths["original"], project["opf"])
+    source_cover_path = safe_resource_path(paths["original"], source_cover_rel) if source_cover_rel else None
+    source_cover_dimensions = (
+        image_dimensions(source_cover_path)
+        if source_cover_path and source_cover_path.is_file()
+        else None
+    )
+    geometry_guidance = (
+        f"Source cover geometry: {source_cover_dimensions[0]} × {source_cover_dimensions[1]} pixels; "
+        "preserve these exact pixel dimensions and aspect ratio when possible.\n"
+        if source_cover_dimensions else
+        "Source cover geometry: preserve the original pixel dimensions and aspect ratio when possible.\n"
+    )
     cover_prompt = (
         "Use case: text-localization\n"
         f"Asset type: {project['target_language']} EPUB front cover\n"
@@ -1828,6 +2311,7 @@ def editorial(paths: dict[str, Path], reasoning_effort: str, resume: bool, cover
         "Input image: edit target, the original EPUB cover.\n"
         f"Text (verbatim): title \"{decision['cover_text']['title']}\"; subtitle \"{decision['cover_text']['subtitle']}\"; "
         f"author \"{decision['cover_text']['author']}\"; contributor \"{decision['cover_text']['contributor']}\".\n"
+        f"{geometry_guidance}"
         f"Constraints: spell every supplied string exactly in {project['target_language']}; omit empty strings; "
         "add no other wording or watermark; retain all publisher and brand marks unchanged; keep safe margins.\n"
         "Avoid: changing any non-text image content, logo, palette, crop, or adding decorative elements.\n"
@@ -1851,6 +2335,7 @@ def apply(paths: dict[str, Path]) -> dict:
     project = json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
     segments = read_jsonl(paths["jobs"] / "segments.jsonl")
     translations = load_translations(paths["jobs"] / "translations.jsonl")
+    materialize_exact_translation_aliases(paths, project, segments, translations)
     missing = [row["id"] for row in segments if row["id"] not in translations]
     if missing:
         raise RuntimeError(f"Missing translations for {len(missing)} segments")
@@ -2037,6 +2522,7 @@ def validate(paths: dict[str, Path]) -> dict:
     editorial_report_path = paths["jobs"] / "editorial" / "editorial_report.json"
     if editorial_report_path.exists():
         editorial_report = json.loads(editorial_report_path.read_text(encoding="utf-8"))
+        warnings.extend(str(value) for value in editorial_report.get("warnings", []) if str(value))
         decision = editorial_report.get("metadata", {})
         title = next((visible_text(node) for node in opf_root.iter()
                       if local_name(node.tag) == "title" and namespace(node.tag) == DC_NS), "")
@@ -2044,10 +2530,39 @@ def validate(paths: dict[str, Path]) -> dict:
             errors.append("The OPF title differs from the approved editorial title")
         if editorial_report.get("cover_status") == "localized":
             cover_rel = editorial_report.get("cover_resource")
-            if not cover_rel or not (paths["working"] / cover_rel).is_file():
+            try:
+                working_cover = safe_resource_path(paths["working"], cover_rel) if cover_rel else None
+                original_cover = safe_resource_path(paths["original"], cover_rel) if cover_rel else None
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                working_cover = original_cover = None
+            if not working_cover or not working_cover.is_file():
                 errors.append("The localized cover resource is missing")
-            elif (paths["working"] / cover_rel).read_bytes() == (paths["original"] / cover_rel).read_bytes():
+            elif original_cover and working_cover.read_bytes() == original_cover.read_bytes():
                 errors.append("The localized cover is identical to the source cover")
+        declared_cover = editorial_report.get("cover_declaration", {})
+        declared_id = declared_cover.get("manifest_id")
+        if declared_id:
+            cover_meta = next(
+                (
+                    node for node in opf_root.iter()
+                    if local_name(node.tag) == "meta" and node.attrib.get("name") == "cover"
+                ),
+                None,
+            )
+            if cover_meta is None or cover_meta.attrib.get("content") != declared_id:
+                errors.append("The OPF cover metadata does not reference the selected manifest image")
+            if package_version(opf_root) >= 3:
+                property_ids = [
+                    node.attrib.get("id", "")
+                    for node in opf_root.iter()
+                    if local_name(node.tag) == "item"
+                    and "cover-image" in node.attrib.get("properties", "").split()
+                ]
+                if property_ids != [declared_id]:
+                    errors.append(
+                        "The EPUB 3 package must declare exactly one cover-image matching the selected cover"
+                    )
     for rel in spine:
         if not (paths["working"] / rel).exists():
             errors.append(f"Spine resource is missing: {rel}")
@@ -2145,6 +2660,7 @@ def build(paths: dict[str, Path]) -> dict:
         f"- Preserved files: {counts['preserve']}\n- Validated files: {statuses['validated']}\n"
         f"- Initial translation batches: {run_stats.get('initial_batches', 'n/a')}\n"
         f"- Repair batches: {run_stats.get('repair_batches', 'n/a')}\n"
+        f"- Recorded runs: {run_stats.get('runs', 'n/a')}\n"
         f"- Parallel workers: {run_stats.get('workers', 'n/a')}\n"
         f"- Translation time: {run_stats.get('wall_seconds', 'n/a')} seconds\n"
         f"- Editorial title: {editorial_stats.get('metadata', {}).get('full_title', 'n/a')}\n"
@@ -2177,6 +2693,10 @@ def main() -> int:
     parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"))
     parser.add_argument("--editorial-reasoning-effort", choices=("low", "medium", "high"), default="medium")
     parser.add_argument("--cover-image", type=Path, help="Localized cover image to install during the editorial stage")
+    parser.add_argument(
+        "--editorial-decision", type=Path,
+        help="Use a schema-valid editorial decision JSON instead of calling Codex",
+    )
     parser.add_argument("--glossary", type=Path, help="Custom UTF-8 glossary used for translation batches")
     parser.add_argument("--book-name", help="Short folder name created under books/")
     parser.add_argument("--keep-source", action="store_true", help="Keep the input EPUB after original.epub is initialized")
@@ -2204,7 +2724,7 @@ def main() -> int:
             print_result("apply", result)
         if args.stage in {"all", "editorial"}:
             result = editorial(paths, args.editorial_reasoning_effort, args.resume, args.cover_image,
-                               target_name, target_code, args.editorial_timeout)
+                               target_name, target_code, args.editorial_timeout, args.editorial_decision)
             print_result("editorial", result)
         if args.stage in {"all", "validate"}:
             result = validate(paths)
