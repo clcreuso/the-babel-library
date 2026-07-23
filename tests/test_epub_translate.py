@@ -27,7 +27,7 @@ class FastEpubPipelineTests(unittest.TestCase):
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">tiny-book</dc:identifier>
-    <dc:title>Tiny Book</dc:title><dc:language>en</dc:language>
+    <dc:title>Tiny Book?</dc:title><dc:language>en</dc:language>
     <dc:description>&lt;p&gt;A small book about objects.&lt;/p&gt;</dc:description>
     <meta name="cover" content="cover"/>
   </metadata>
@@ -47,13 +47,17 @@ class FastEpubPipelineTests(unittest.TestCase):
 <p><img src="diagram.png" alt="Useful diagram"/></p>
 </body></html>""",
             "OEBPS/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><body>
-<nav><h1>Table of Contents</h1><ol><li><a href="ch01.xhtml#chapter-one">Object Design</a></li></ol></nav>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head><title>Tiny Book: Table of Contents</title></head><body>
+<nav><h1>Table of Contents</h1><ol>
+<li><a href="ch01.xhtml">Object Design</a></li>
+<li><a href="cover.jpg">Cover</a></li>
+</ol></nav>
 </body></html>""",
             "toc.ncx": """<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" xml:lang="en" version="2005-1">
 <head/><docTitle><text>Tiny Book</text></docTitle><navMap>
-<navPoint id="n1" playOrder="1"><navLabel><text>Object Design</text></navLabel><content src="OEBPS/ch01.xhtml#chapter-one"/></navPoint>
+<navPoint id="n1" playOrder="1"><navLabel><text>Object Design</text></navLabel><content src="OEBPS/ch01.xhtml"/></navPoint>
 </navMap></ncx>""",
             "OEBPS/diagram.png": b"not-a-real-png-but-preserved",
             "OEBPS/cover.jpg": b"source-cover",
@@ -139,6 +143,9 @@ class FastEpubPipelineTests(unittest.TestCase):
                 self.assertIn("Conception objet", "".join(chapter.itertext()))
                 self.assertIn("Gear", "".join(chapter.itertext()))
                 self.assertIn("Conception objet", "".join(nav.itertext()))
+                self.assertIn("Couverture", "".join(nav.itertext()))
+                nav_title = next(node for node in nav.iter() if pipeline.local_name(node.tag) == "title")
+                self.assertEqual(nav_title.text, "Petit livre : conception objet : Table des matières")
                 self.assertIn("Conception objet", "".join(ncx.itertext()))
                 self.assertEqual(project["target_language_code"], "fr")
                 opf = ET.fromstring(archive.read("content.opf"))

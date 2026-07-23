@@ -22,7 +22,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPF_NS = "http://www.idpf.org/2007/opf"
@@ -69,7 +69,9 @@ UI_TRANSLATIONS = {
         "Contents": "Sommaire", "Table of Contents": "Table des matières", "Index": "Index",
         "Introduction": "Introduction", "Preface": "Préface", "Acknowledgments": "Remerciements",
         "Afterword": "Postface", "About the Author": "À propos de l’auteur", "Cover": "Couverture",
-        "Copyright": "Droits d’auteur", "Code Snippets": "Extraits de code", "Summary": "Résumé",
+        "Title Page": "Page de titre", "Copyright": "Droits d’auteur",
+        "Copyright Page": "Page de copyright", "Body Matter": "Corps du livre",
+        "Landmarks": "Repères", "Code Snippets": "Extraits de code", "Summary": "Résumé",
     }
 }
 
@@ -1245,6 +1247,15 @@ def set_visible_text(element: ET.Element, value: str) -> None:
         element.text = value
 
 
+def heading_title_pair(source_heading: ET.Element, target_heading: ET.Element) -> tuple[str, str]:
+    """Return the most navigation-friendly source/target title for a heading."""
+    source_attribute = normalize_space(source_heading.attrib.get("title"))
+    target_attribute = normalize_space(target_heading.attrib.get("title"))
+    if source_attribute and target_attribute:
+        return source_attribute, target_attribute
+    return visible_text(source_heading), visible_text(target_heading)
+
+
 def id_heading_map(original: Path, working: Path, rels: list[str]) -> dict[tuple[str, str], tuple[str, str]]:
     result: dict[tuple[str, str], tuple[str, str]] = {}
     heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -1258,8 +1269,24 @@ def id_heading_map(original: Path, working: Path, rels: list[str]) -> dict[tuple
         except ET.ParseError:
             continue
         source_paths, source_parents = element_paths(source_root)
-        target_paths, _ = element_paths(target_root)
         source_order = list(source_root.iter())
+        default_heading = next(
+            (node for node in source_order
+             if local_name(node.tag) in heading_tags
+             and (normalize_space(node.attrib.get("title")) or visible_text(node))),
+            None,
+        )
+        if default_heading is not None:
+            path = source_paths.get(id(default_heading))
+            if path is not None:
+                try:
+                    target_heading = element_at(target_root, path)
+                except (IndexError, KeyError):
+                    pass
+                else:
+                    # The empty fragment is the canonical destination for links such as
+                    # ``Chapter1.xhtml``. Many production EPUBs omit heading anchors.
+                    result[(rel, "")] = heading_title_pair(default_heading, target_heading)
         for element in source_order:
             fragment = element.attrib.get("id")
             if not fragment:
@@ -1281,7 +1308,11 @@ def id_heading_map(original: Path, working: Path, rels: list[str]) -> dict[tuple
                 target_heading = element_at(target_root, path)
             except (IndexError, KeyError):
                 continue
-            result[(rel, fragment)] = (source_title, visible_text(target_heading))
+            mapped_source, mapped_target = heading_title_pair(heading, target_heading)
+            result[(rel, fragment)] = (
+                mapped_source or source_title,
+                mapped_target or visible_text(target_heading),
+            )
     return result
 
 
@@ -1296,8 +1327,65 @@ def translated_label(source_label: str, source_title: str, target_title: str) ->
     return None
 
 
+def navigation_label_replacement(source_label: str, href: str, rel: str,
+                                 heading_map: dict[tuple[str, str], tuple[str, str]],
+                                 ui: dict[str, str]) -> str | None:
+    """Resolve a local navigation label, including document links without fragments."""
+    parts = urlsplit(href)
+    if parts.scheme or parts.netloc:
+        return None
+    source_label_n = normalize_space(source_label)
+    if source_label_n in ui:
+        return ui[source_label_n]
+    target_rel = (Path(rel).parent / unquote(parts.path)).as_posix() if parts.path else rel
+    mapping = heading_map.get((target_rel, unquote(parts.fragment)))
+    if not mapping:
+        return None
+    return translated_label(source_label_n, mapping[0], mapping[1])
+
+
+def document_title_replacement(source_label: str, rel: str,
+                               heading_map: dict[tuple[str, str], tuple[str, str]],
+                               ui: dict[str, str], source_book_title: str,
+                               target_book_title: str) -> str | None:
+    """Localize document titles that combine the book title with a UI or chapter label."""
+    source_label_n = normalize_space(source_label)
+    if source_label_n in ui:
+        return ui[source_label_n]
+    source_book_title_n = normalize_space(source_book_title)
+    target_book_title_n = normalize_space(target_book_title)
+    source_title_variants = []
+    for candidate in (source_book_title_n, source_book_title_n.rstrip(".!?…")):
+        if candidate and candidate not in source_title_variants:
+            source_title_variants.append(candidate)
+    for source_title_variant in source_title_variants:
+        if source_label_n.casefold() == source_title_variant.casefold():
+            return target_book_title_n or None
+        prefix = source_title_variant + ":"
+        if not source_label_n.casefold().startswith(prefix.casefold()):
+            continue
+        suffix = normalize_space(source_label_n[len(prefix):])
+        if suffix in ui:
+            return f"{target_book_title_n} : {ui[suffix]}" if target_book_title_n else ui[suffix]
+        mapping = heading_map.get((rel, ""))
+        if mapping:
+            mapped_source, mapped_target = map(normalize_space, mapping)
+            if mapped_source.casefold().startswith(suffix.casefold()):
+                # Preserve a short source suffix such as "Chapter 1" when the
+                # canonical heading is "Chapter 1: Full title".
+                target_suffix = mapped_target
+                if len(suffix) < len(mapped_source) and ":" in mapped_source and ":" in mapped_target:
+                    target_suffix = mapped_target.split(":", 1)[0].strip()
+                return f"{target_book_title_n} : {target_suffix}" if target_book_title_n else target_suffix
+    mapping = heading_map.get((rel, ""))
+    if mapping:
+        return translated_label(source_label_n, mapping[0], mapping[1])
+    return None
+
+
 def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
-                     heading_map: dict[tuple[str, str], tuple[str, str]], ui: dict[str, str]) -> None:
+                     heading_map: dict[tuple[str, str], tuple[str, str]], ui: dict[str, str],
+                     source_book_title: str = "", target_book_title: str = "") -> None:
     source_tree, target_tree = parse_xml(source_path), parse_xml(target_path)
     source_nodes, target_nodes = list(source_tree.getroot().iter()), list(target_tree.getroot().iter())
     if len(source_nodes) != len(target_nodes):
@@ -1307,20 +1395,16 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             continue
         if local_name(source.tag) != "a":
             label = visible_text(source)
-            if label in ui:
-                set_visible_text(target, ui[label])
+            replacement = document_title_replacement(
+                label, rel, heading_map, ui, source_book_title, target_book_title,
+            )
+            if replacement:
+                set_visible_text(target, replacement)
             continue
         href = source.attrib.get("href")
         if not href:
             continue
-        parts = urlsplit(href)
-        if parts.scheme or parts.netloc or not parts.fragment:
-            continue
-        target_rel = (Path(rel).parent / unquote(parts.path)).as_posix() if parts.path else rel
-        mapping = heading_map.get((target_rel, unquote(parts.fragment)))
-        if not mapping:
-            continue
-        replacement = translated_label(visible_text(source), mapping[0], mapping[1])
+        replacement = navigation_label_replacement(visible_text(source), href, rel, heading_map, ui)
         protected_descendant = any(
             node is not target and (local_name(node.tag) in PROTECTED_TAGS or has_protected_class(node))
             for node in target.iter()
@@ -1336,7 +1420,8 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
 
 
 def sync_ncx(source_path: Path, target_path: Path, rel: str,
-             heading_map: dict[tuple[str, str], tuple[str, str]], title: str, target_code: str) -> None:
+             heading_map: dict[tuple[str, str], tuple[str, str]], title: str,
+             target_code: str, ui: dict[str, str]) -> None:
     source_tree, target_tree = parse_xml(source_path), parse_xml(target_path)
     source_points = [e for e in source_tree.getroot().iter() if local_name(e.tag) == "navPoint"]
     target_points = [e for e in target_tree.getroot().iter() if local_name(e.tag) == "navPoint"]
@@ -1346,13 +1431,11 @@ def sync_ncx(source_path: Path, target_path: Path, rel: str,
         target_text = next((e for e in target_point.iter() if local_name(e.tag) == "text"), None)
         if source_content is None or source_text is None or target_text is None:
             continue
-        parts = urlsplit(source_content.attrib.get("src", ""))
-        target_rel = (Path(rel).parent / unquote(parts.path)).as_posix() if parts.path else rel
-        mapping = heading_map.get((target_rel, unquote(parts.fragment)))
-        if mapping:
-            replacement = translated_label(visible_text(source_text), mapping[0], mapping[1])
-            if replacement:
-                target_text.text = replacement
+        replacement = navigation_label_replacement(
+            visible_text(source_text), source_content.attrib.get("src", ""), rel, heading_map, ui,
+        )
+        if replacement:
+            target_text.text = replacement
     doc_title = next((e for e in target_tree.getroot().iter() if local_name(e.tag) == "docTitle"), None)
     if doc_title is not None:
         text_node = next((e for e in doc_title.iter() if local_name(e.tag) == "text"), None)
@@ -1667,18 +1750,29 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
         if row["relative_path"] in changed_front_matter and row["category"] == "preserve":
             row.update({"category": "editorial", "reason": "editorially corrected front matter", "status": "pending"})
 
-    for rel in project.get("serial_files", []):
-        path = paths["working"] / rel
-        if not path.exists() or rel == project["opf"]:
+    items, serial, _ = media_inventory(paths["working"], project["opf"])
+    content_rels = [
+        rel for rel, item in items.items()
+        if item["media_type"] in {"application/xhtml+xml", "application/x-dtbook+xml"} and rel not in serial
+    ]
+    heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
+    ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
+    ui["__code__"] = project["target_language_code"]
+    source_title = translated_book_title(paths["original"] / project["opf"])
+    for rel in serial:
+        if rel == project["opf"] or not (paths["working"] / rel).exists():
             continue
-        serial_tree = parse_xml(path)
-        serial_root = serial_tree.getroot()
-        if rel.endswith(".ncx"):
-            doc_title = next((node for node in serial_root.iter() if local_name(node.tag) == "docTitle"), None)
-            text_node = next((node for node in doc_title.iter() if local_name(node.tag) == "text"), None) if doc_title is not None else None
-            if text_node is not None:
-                text_node.text = decision["full_title"]
-        write_tree(serial_tree, path)
+        media_type = items.get(rel, {}).get("media_type", "")
+        if media_type == "application/x-dtbncx+xml" or rel.endswith(".ncx"):
+            sync_ncx(
+                paths["original"] / rel, paths["working"] / rel, rel, heading_map,
+                decision["full_title"], project["target_language_code"], ui,
+            )
+        elif media_type in {"application/xhtml+xml", "application/x-dtbook+xml"}:
+            sync_xhtml_links(
+                paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
+                source_title, decision["full_title"],
+            )
 
     cover_rel = find_cover_resource(paths["working"], project["opf"])
     cover_status = "preserved"
@@ -1799,19 +1893,29 @@ def apply(paths: dict[str, Path]) -> dict:
     heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
     ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
     ui["__code__"] = project["target_language_code"]
+    source_title = translated_book_title(paths["original"] / project["opf"])
+    title = translated_book_title(paths["working"] / project["opf"])
     translated_content_rels = [rel for rel in content_rels if rel in by_file]
     for rel in translated_content_rels:
-        sync_xhtml_links(paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui)
-    title = translated_book_title(paths["working"] / project["opf"])
+        sync_xhtml_links(
+            paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
+            source_title, title,
+        )
     for rel in project["serial_files"]:
         if rel == project["opf"]:
             continue
         shutil.copy2(paths["original"] / rel, paths["working"] / rel)
         media_type = items.get(rel, {}).get("media_type", "")
         if media_type == "application/x-dtbncx+xml" or rel.endswith(".ncx"):
-            sync_ncx(paths["original"] / rel, paths["working"] / rel, rel, heading_map, title, project["target_language_code"])
+            sync_ncx(
+                paths["original"] / rel, paths["working"] / rel, rel, heading_map, title,
+                project["target_language_code"], ui,
+            )
         elif media_type in {"application/xhtml+xml", "application/x-dtbook+xml"}:
-            sync_xhtml_links(paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui)
+            sync_xhtml_links(
+                paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
+                source_title, title,
+            )
     for stale in (
         paths["jobs"] / "editorial" / "editorial_report.json",
         paths["jobs"] / "validation.json",
@@ -1825,6 +1929,61 @@ def apply(paths: dict[str, Path]) -> dict:
 
 def protected_payload(element: ET.Element) -> tuple:
     return (local_name(element.tag), tuple(sorted(element.attrib.items())), "".join(element.itertext()))
+
+
+def navigation_sync_errors(original: Path, working: Path, rels: list[str],
+                           heading_map: dict[tuple[str, str], tuple[str, str]],
+                           ui: dict[str, str], source_book_title: str,
+                           target_book_title: str) -> list[str]:
+    """Verify that every deterministically resolvable navigation label was localized."""
+    errors: list[str] = []
+    for rel in rels:
+        source_path, target_path = original / rel, working / rel
+        try:
+            source_root = parse_xml(source_path).getroot()
+            target_root = parse_xml(target_path).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        source_nodes, target_nodes = list(source_root.iter()), list(target_root.iter())
+        if len(source_nodes) != len(target_nodes):
+            continue
+        if rel.endswith(".ncx") or namespace(source_root.tag) == NCX_NS:
+            source_points = [node for node in source_nodes if local_name(node.tag) == "navPoint"]
+            target_points = [node for node in target_nodes if local_name(node.tag) == "navPoint"]
+            for source_point, target_point in zip(source_points, target_points):
+                source_content = next((node for node in source_point.iter() if local_name(node.tag) == "content"), None)
+                source_text = next((node for node in source_point.iter() if local_name(node.tag) == "text"), None)
+                target_text = next((node for node in target_point.iter() if local_name(node.tag) == "text"), None)
+                if source_content is None or source_text is None or target_text is None:
+                    continue
+                expected = navigation_label_replacement(
+                    visible_text(source_text), source_content.attrib.get("src", ""), rel, heading_map, ui,
+                )
+                if expected and visible_text(target_text) != normalize_space(expected):
+                    errors.append(f"Navigation label was not localized in {rel}: {visible_text(source_text)!r}")
+            continue
+        for source, target in zip(source_nodes, target_nodes):
+            if local_name(source.tag) in {"h1", "h2", "h3", "title"}:
+                expected = document_title_replacement(
+                    visible_text(source), rel, heading_map, ui, source_book_title, target_book_title,
+                )
+                if expected and visible_text(target) != normalize_space(expected):
+                    errors.append(f"Navigation heading was not localized in {rel}: {visible_text(source)!r}")
+                continue
+            if local_name(source.tag) != "a" or not source.attrib.get("href"):
+                continue
+            protected_descendant = any(
+                node is not target and (local_name(node.tag) in PROTECTED_TAGS or has_protected_class(node))
+                for node in target.iter()
+            )
+            if protected_descendant:
+                continue
+            expected = navigation_label_replacement(
+                visible_text(source), source.attrib["href"], rel, heading_map, ui,
+            )
+            if expected and visible_text(target) != normalize_space(expected):
+                errors.append(f"Navigation label was not localized in {rel}: {visible_text(source)!r}")
+    return errors
 
 
 def validate(paths: dict[str, Path]) -> dict:
@@ -1892,6 +2051,17 @@ def validate(paths: dict[str, Path]) -> dict:
     for rel in spine:
         if not (paths["working"] / rel).exists():
             errors.append(f"Spine resource is missing: {rel}")
+    content_rels = [
+        rel for rel, item in items.items()
+        if item["media_type"] in {"application/xhtml+xml", "application/x-dtbook+xml"} and rel not in serial
+    ]
+    heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
+    ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
+    source_title = translated_book_title(paths["original"] / project["opf"])
+    target_title = translated_book_title(paths["working"] / project["opf"])
+    errors.extend(navigation_sync_errors(
+        paths["original"], paths["working"], serial, heading_map, ui, source_title, target_title,
+    ))
     for row in manifest_rows:
         if row["category"] == "preserve":
             source = paths["original"] / row["relative_path"]
