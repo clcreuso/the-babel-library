@@ -172,6 +172,20 @@ prepare → translate → apply → editorial → validate → build
 
 Each stage can be selected with `--stage`. See the detailed [French workflow guide](translate_epub.md) for generated files, repair behavior, and operational details.
 
+## Post-run learning review
+
+After a completed translation, Codex can review the real execution artifacts, inspect quality and
+efficiency signals, and propose small, generalizable, testable improvements:
+
+```text
+[review_translation.md](review_translation.md)
+```
+
+Run it in the same Codex session immediately after `translate_epub.md`; the book, target language,
+working directory, and final output are inherited from that session. The review is strictly
+read-only: it does not modify files, run tests, rebuild the EPUB, or apply its proposals. A clean run
+or an isolated model variation may correctly result in no recommendation.
+
 ## Tests
 
 ```sh
