@@ -23,7 +23,7 @@ from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
 
 
-VERSION = "0.1.2"
+VERSION = "0.2.0"
 XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 XHTML_NS = "http://www.w3.org/1999/xhtml"
 OPF_NS = "http://www.idpf.org/2007/opf"
@@ -50,6 +50,7 @@ MAX_EPUB_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_COMPRESSION_RATIO = 1_000
 DEFAULT_WORKER_TIMEOUT = 30 * 60
 DEFAULT_EDITORIAL_TIMEOUT = 10 * 60
+DEFAULT_STYLE_TIMEOUT = 10 * 60
 PROTECTION_SCHEMA_VERSION = 2
 
 # Only unmistakably terminal failures belong here. Unknown Codex failures remain
@@ -1990,6 +1991,876 @@ def image_dimensions(path: Path) -> tuple[int, int] | None:
     return None
 
 
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def css_top_level_blocks(text: str) -> list[dict]:
+    """Locate top-level CSS blocks while ignoring braces in comments and strings."""
+    blocks: list[dict] = []
+    depth = 0
+    prelude_start = 0
+    block_start = -1
+    content_start = -1
+    selector = ""
+    quote = ""
+    comment = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if comment:
+            if char == "*" and following == "/":
+                comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "/" and following == "*":
+            comment = True
+            index += 2
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            continue
+        if depth == 0 and char == ";":
+            prelude_start = index + 1
+        elif char == "{":
+            if depth == 0:
+                raw_prelude = text[prelude_start:index]
+                selector = re.sub(r"/\*.*?\*/", " ", raw_prelude, flags=re.S).strip()
+                leading = len(raw_prelude) - len(raw_prelude.lstrip())
+                block_start = prelude_start + leading
+                content_start = index + 1
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                blocks.append({
+                    "selector": selector,
+                    "start": block_start,
+                    "content_start": content_start,
+                    "content_end": index,
+                    "end": index + 1,
+                    "body": text[content_start:index],
+                })
+                prelude_start = index + 1
+        index += 1
+    return blocks
+
+
+CSS_DECLARATION_RE = re.compile(
+    r"(?P<property>-{0,2}[A-Za-z_][\w-]*)\s*:\s*"
+    r"(?P<value>[^;{}]+?)(?P<semi>;|$)",
+)
+
+
+def css_declarations(block: dict) -> list[dict]:
+    declarations = []
+    for match in CSS_DECLARATION_RE.finditer(block["body"]):
+        declarations.append({
+            "property": match.group("property").casefold(),
+            "value": match.group("value").strip(),
+            "start": block["content_start"] + match.start("property"),
+            "end": block["content_start"] + match.end("semi"),
+            "value_start": block["content_start"] + match.start("value"),
+            "value_end": block["content_start"] + match.end("value"),
+        })
+    return declarations
+
+
+def style_template_usage(paths: dict[str, Path], project: dict) -> dict:
+    """Summarize how CSS classes are used without exposing whole book content."""
+    items, _, _ = media_inventory(paths["working"], project["opf"])
+    class_tags: dict[str, Counter] = defaultdict(Counter)
+    code_classes: Counter = Counter()
+    code_wrappers: Counter = Counter()
+    inline_styles = 0
+    parsed_documents = 0
+    for rel, item in items.items():
+        if item["media_type"] not in {"application/xhtml+xml", "application/x-dtbook+xml"}:
+            continue
+        try:
+            root = parse_xml(paths["working"] / rel).getroot()
+        except (OSError, ET.ParseError, UnicodeError):
+            continue
+        parsed_documents += 1
+        _, parents = element_paths(root)
+        for element in root.iter():
+            tag = local_name(element.tag).casefold()
+            classes = element.attrib.get("class", "").split()
+            for class_name in classes:
+                class_tags[class_name][tag] += 1
+            if element.attrib.get("style"):
+                inline_styles += 1
+            is_block_code = (
+                local_name(element.tag) == "pre"
+                or has_protected_class(element)
+                or has_code_container_class(element)
+            )
+            if not is_block_code:
+                continue
+            for class_name in classes:
+                code_classes[class_name] += 1
+            current = parents.get(id(element))
+            levels = 0
+            while current is not None and levels < 3:
+                for class_name in current.attrib.get("class", "").split():
+                    code_wrappers[class_name] += 1
+                current = parents.get(id(current))
+                levels += 1
+    return {
+        "parsed_documents": parsed_documents,
+        "inline_style_attributes": inline_styles,
+        "class_tags": {
+            key: dict(sorted(value.items()))
+            for key, value in sorted(class_tags.items())
+        },
+        "code_classes": dict(sorted(code_classes.items())),
+        "code_wrapper_classes": dict(sorted(code_wrappers.items())),
+    }
+
+
+def selector_class_names(selector: str) -> set[str]:
+    return set(re.findall(r"\.(-?[_A-Za-z][\w-]*)", selector))
+
+
+def public_style_candidate(candidate: dict) -> dict:
+    return {key: value for key, value in candidate.items() if not key.startswith("_")}
+
+
+def style_context(paths: dict[str, Path], project: dict) -> tuple[dict, dict[str, dict]]:
+    usage = style_template_usage(paths, project)
+    class_tags = usage["class_tags"]
+    code_classes = set(usage["code_classes"])
+    code_wrapper_classes = set(usage["code_wrapper_classes"])
+    candidates: list[dict] = []
+    lookup: dict[str, dict] = {}
+    metrics = Counter()
+    css_files = sorted(
+        path for path in paths["working"].rglob("*.css")
+        if path.is_file() and path.name != ".DS_Store"
+    )
+
+    def add_candidate(
+        rel: str,
+        kind: str,
+        selector: str,
+        prop: str,
+        value: str,
+        issue: str,
+        allowed: list[dict],
+        spans: list[dict],
+        usage_tags: dict[str, int],
+        snippet: str,
+    ) -> None:
+        identity = f"{rel}|{kind}|{selector}|{prop}|{value}|{len(candidates)}"
+        candidate = {
+            "candidate_id": f"style-{stable_hash(identity, 18)}",
+            "file": rel,
+            "kind": kind,
+            "selector": selector[:500],
+            "property": prop,
+            "current_value": value[:500],
+            "issue": issue,
+            "template_usage": usage_tags,
+            "allowed_actions": allowed,
+            "rule_excerpt": normalize_space(snippet)[:1000],
+            "_spans": spans,
+            "_allowed": {(item["action"], item.get("replacement", "")) for item in allowed},
+        }
+        candidates.append(candidate)
+        lookup[candidate["candidate_id"]] = candidate
+
+    file_summaries = []
+    for path in css_files:
+        rel = path.relative_to(paths["working"]).as_posix()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        source_path = paths["original"] / rel
+        blocks = css_top_level_blocks(text)
+        remote_font_spans = []
+        remote_font_families = []
+        root_color_groups: dict[str, dict] = {}
+        declarations_total = 0
+        for block in blocks:
+            declarations = css_declarations(block)
+            declarations_total += len(declarations)
+            selector = block["selector"]
+            selector_lower = selector.casefold()
+            classes = selector_class_names(selector)
+            usage_tags: Counter = Counter()
+            for class_name in classes:
+                usage_tags.update(class_tags.get(class_name, {}))
+            root_like = (
+                bool(re.search(r"(^|[\s>,+~])(html|body)(?=$|[\s.#:[>,+~])", selector_lower))
+                or bool({"html", "body"} & set(usage_tags))
+            )
+            image_only = bool(usage_tags) and set(usage_tags) <= {"img", "image", "svg"}
+            code_like = (
+                bool(classes & code_wrapper_classes)
+                or bool(classes & code_classes)
+                or bool(classes & PROTECTED_CLASSES)
+                or bool(re.search(r"(^|[-_.:#])(code|pre|listing|program|screen)([-_.:#]|$)", selector_lower))
+                or bool({"code", "pre", "kbd", "samp"} & set(usage_tags))
+            )
+            declaration_values = {
+                declaration["property"]: declaration["value"]
+                for declaration in declarations
+            }
+            forced_root_backgrounds = [
+                declaration for declaration in declarations
+                if root_like
+                and declaration["property"] in {"background", "background-color"}
+                and declaration["value"].casefold()
+                not in {"transparent", "none", "inherit", "initial"}
+            ]
+            forced_root_text_colors = [
+                declaration for declaration in declarations
+                if root_like
+                and declaration["property"] == "color"
+                and declaration["value"].casefold()
+                not in {"inherit", "initial", "currentcolor"}
+            ]
+            if forced_root_backgrounds or forced_root_text_colors:
+                group_key = normalize_space(selector).casefold()
+                group = root_color_groups.setdefault(group_key, {
+                    "selector": selector,
+                    "backgrounds": [],
+                    "text_colors": [],
+                    "usage_tags": Counter(),
+                    "snippets": [],
+                })
+                group["backgrounds"].extend(forced_root_backgrounds)
+                group["text_colors"].extend(forced_root_text_colors)
+                group["usage_tags"].update(usage_tags)
+                group["snippets"].append(block["body"])
+            if selector_lower.startswith("@font-face") and re.search(
+                r"url\(\s*['\"]?(?:https?://|//|/)", block["body"], flags=re.I,
+            ):
+                remote_font_spans.append({"start": block["start"], "end": block["end"]})
+                family = declaration_values.get("font-family")
+                if family:
+                    remote_font_families.append(family)
+                continue
+            for declaration in declarations:
+                prop = declaration["property"]
+                value = declaration["value"]
+                value_lower = value.casefold()
+                metrics[prop] += 1
+                span = [{
+                    "start": declaration["start"],
+                    "end": declaration["end"],
+                    "value_start": declaration["value_start"],
+                    "value_end": declaration["value_end"],
+                }]
+                if root_like and prop in {"background", "background-color"} \
+                        and value_lower not in {"transparent", "none", "inherit", "initial"}:
+                    continue
+                elif root_like and prop == "color" and value_lower not in {"inherit", "initial", "currentcolor"}:
+                    continue
+                elif root_like and prop in {"height", "min-height"} and re.fullmatch(
+                    r"\d+(?:\.\d+)?px", value_lower,
+                ):
+                    add_candidate(
+                        rel, "root-fixed-height", selector, prop, value,
+                        "A fixed root height can interfere with pagination on small viewports.",
+                        [{"action": "remove", "replacement": ""}], span, dict(usage_tags), block["body"],
+                    )
+                elif image_only and prop == "height" and re.fullmatch(
+                    r"\d+(?:\.\d+)?px", value_lower,
+                ) and any(
+                    key in declaration_values
+                    for key in ("width", "max-width")
+                ):
+                    add_candidate(
+                        rel, "image-fixed-height", selector, prop, value,
+                        "A fixed image height can distort its aspect ratio when its width shrinks.",
+                        [{"action": "replace", "replacement": "auto"}], span, dict(usage_tags), block["body"],
+                    )
+                elif code_like and prop in {"overflow", "overflow-x", "overflow-y"} \
+                        and value_lower in {"auto", "scroll", "hidden"}:
+                    add_candidate(
+                        rel, "code-overflow", selector, prop, value,
+                        "Scrollable or clipped code can disappear in paginated reading systems.",
+                        [{"action": "replace", "replacement": "visible"}], span, dict(usage_tags), block["body"],
+                    )
+                elif code_like and prop in {"page-break-inside", "page-break-after"} \
+                        and value_lower == "avoid":
+                    add_candidate(
+                        rel, "code-pagination", selector, prop, value,
+                        "An unbreakable code block can be taller than an e-reader page.",
+                        [{"action": "replace", "replacement": "auto"}], span, dict(usage_tags), block["body"],
+                    )
+                elif prop == "page-break-inside" and value_lower == "avoid" \
+                        and not image_only and bool(
+                            {"div", "aside", "section", "table", "blockquote"} & set(usage_tags)
+                        ):
+                    add_candidate(
+                        rel, "pagination-constraint", selector, prop, value,
+                        "A complex container can become taller than a page and block pagination.",
+                        [{"action": "replace", "replacement": "auto"}], span, dict(usage_tags), block["body"],
+                    )
+                elif code_like and prop == "word-break" and value_lower == "keep-all":
+                    add_candidate(
+                        rel, "code-wrapping", selector, prop, value,
+                        "Preventing all line breaks can force code beyond a narrow viewport.",
+                        [{"action": "replace", "replacement": "normal"}], span, dict(usage_tags), block["body"],
+                    )
+                elif code_like and prop in {"word-wrap", "overflow-wrap"} \
+                        and value_lower in {"initial", "normal"}:
+                    add_candidate(
+                        rel, "code-wrapping", selector, prop, value,
+                        "Code needs a safe fallback for unusually long tokens.",
+                        [{"action": "replace", "replacement": "break-word"}], span, dict(usage_tags), block["body"],
+                    )
+        root_backgrounds = [
+            declaration
+            for group in root_color_groups.values()
+            for declaration in group["backgrounds"]
+        ]
+        root_text_colors = [
+            declaration
+            for group in root_color_groups.values()
+            for declaration in group["text_colors"]
+        ]
+        if root_backgrounds and root_text_colors:
+            color_candidate_groups = [{
+                "selector": ", ".join(
+                    group["selector"] for group in root_color_groups.values()
+                ),
+                "backgrounds": root_backgrounds,
+                "text_colors": root_text_colors,
+                "usage_tags": sum(
+                    (group["usage_tags"] for group in root_color_groups.values()),
+                    Counter(),
+                ),
+                "snippets": [
+                    snippet
+                    for group in root_color_groups.values()
+                    for snippet in group["snippets"]
+                ],
+            }]
+        else:
+            color_candidate_groups = list(root_color_groups.values())
+        for group in color_candidate_groups:
+            grouped_declarations = group["backgrounds"] + group["text_colors"]
+            grouped_properties = " + ".join(
+                sorted({declaration["property"] for declaration in grouped_declarations})
+            )
+            grouped_values = "; ".join(
+                f"{declaration['property']}: {declaration['value']}"
+                for declaration in grouped_declarations
+            )
+            if group["backgrounds"] and group["text_colors"]:
+                issue = (
+                    "All forced root text and background colors in this stylesheet "
+                    "must be removed together "
+                    "to preserve contrast in night and sepia modes."
+                )
+            elif group["backgrounds"]:
+                issue = "A forced root background can conflict with night or sepia modes."
+            else:
+                issue = "A forced root text color can conflict with reader-selected contrast modes."
+            add_candidate(
+                rel, "root-color", group["selector"], grouped_properties, grouped_values,
+                issue, [{"action": "remove", "replacement": ""}],
+                [{
+                    "start": declaration["start"],
+                    "end": declaration["end"],
+                    "value_start": declaration["value_start"],
+                    "value_end": declaration["value_end"],
+                } for declaration in grouped_declarations],
+                dict(group["usage_tags"]), "\n".join(group["snippets"]),
+            )
+        if remote_font_spans:
+            add_candidate(
+                rel, "remote-font-face", "@font-face", "rule",
+                f"{len(remote_font_spans)} remote or absolute font-face rule(s)",
+                "Fonts outside the EPUB are unavailable offline and vary across reading platforms.",
+                [{"action": "remove", "replacement": ""}], remote_font_spans, {},
+                ", ".join(sorted(set(remote_font_families))) or "@font-face",
+            )
+        file_summaries.append({
+            "file": rel,
+            "bytes": len(text.encode("utf-8")),
+            "rules": len(blocks),
+            "declarations": declarations_total,
+            "source_sha256": sha256_file(source_path) if source_path.is_file() else "",
+            "working_sha256": sha256_file(path),
+            "already_differs_from_source": (
+                source_path.is_file() and source_path.read_bytes() != path.read_bytes()
+            ),
+        })
+    context = {
+        "objective": (
+            "Preserve the publisher design while correcting only low-risk CSS conflicts with "
+            "reflow, pagination, user font/contrast preferences, and offline EPUB rendering."
+        ),
+        "target_language": project["target_language"],
+        "target_language_code": project["target_language_code"],
+        "template_summary": {
+            "parsed_documents": usage["parsed_documents"],
+            "inline_style_attributes": usage["inline_style_attributes"],
+            "code_classes": usage["code_classes"],
+            "code_wrapper_classes": usage["code_wrapper_classes"],
+        },
+        "css_files": file_summaries,
+        "property_counts": dict(sorted(metrics.items())),
+        "candidates": [public_style_candidate(candidate) for candidate in candidates],
+    }
+    return context, lookup
+
+
+def style_schema() -> dict:
+    string = {"type": "string"}
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "changes", "observations"],
+        "properties": {
+            "summary": string,
+            "changes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["candidate_id", "action", "replacement", "reason"],
+                    "properties": {
+                        "candidate_id": string,
+                        "action": {"type": "string", "enum": ["remove", "replace"]},
+                        "replacement": string,
+                        "reason": string,
+                    },
+                },
+            },
+            "observations": {"type": "array", "items": string},
+        },
+    }
+
+
+def validate_style_decision(payload: object, candidates: dict[str, dict] | None = None) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Style response is not a JSON object")
+    required = {"summary", "changes", "observations"}
+    unknown = sorted(set(payload) - required)
+    if unknown or set(payload) != required:
+        raise ValueError("Style response must contain only summary, changes, and observations")
+    if not isinstance(payload["summary"], str):
+        raise ValueError("Style summary is missing or invalid")
+    if not isinstance(payload["changes"], list):
+        raise ValueError("Style changes are missing or invalid")
+    if not isinstance(payload["observations"], list) or not all(
+        isinstance(value, str) for value in payload["observations"]
+    ):
+        raise ValueError("Style observations are missing or invalid")
+    payload["summary"] = clean_metadata_text(payload["summary"])
+    payload["observations"] = [
+        clean_metadata_text(value) for value in payload["observations"]
+        if clean_metadata_text(value)
+    ]
+    seen = set()
+    cleaned = []
+    for change in payload["changes"]:
+        if not isinstance(change, dict) or set(change) != {
+            "candidate_id", "action", "replacement", "reason",
+        }:
+            raise ValueError("Each style change must contain candidate_id, action, replacement, and reason")
+        if not all(isinstance(change.get(key), str) for key in change):
+            raise ValueError("Style change fields must be strings")
+        candidate_id = change["candidate_id"]
+        action = change["action"]
+        replacement = change["replacement"].strip()
+        reason = clean_metadata_text(change["reason"])
+        if candidate_id in seen:
+            raise ValueError(f"Duplicate style candidate: {candidate_id}")
+        seen.add(candidate_id)
+        if candidates is not None:
+            candidate = candidates.get(candidate_id)
+            if candidate is None:
+                raise ValueError(f"Unknown style candidate: {candidate_id}")
+            if (action, replacement) not in candidate["_allowed"]:
+                raise ValueError(
+                    f"Unauthorized style transformation for {candidate_id}: "
+                    f"{action} {replacement!r}"
+                )
+        if not reason:
+            raise ValueError(f"Style change {candidate_id} needs a reason")
+        cleaned.append({
+            "candidate_id": candidate_id,
+            "action": action,
+            "replacement": replacement,
+            "reason": reason,
+        })
+    payload["changes"] = cleaned
+    return payload
+
+
+def record_style_failure(style_dir: Path, kind: str, retryable: bool,
+                         detail: str, log_path: Path) -> dict:
+    failure_report = {
+        "status": "error" if retryable else "blocked_external",
+        "kind": kind,
+        "retryable": retryable,
+        "detail": clean_metadata_text(detail)[:300],
+        "log": str(log_path),
+        "recovery": "Resume later, or provide a schema-valid decision with --style-decision.",
+    }
+    write_json_atomic(style_dir / "style_failure.json", failure_report)
+    return failure_report
+
+
+def run_style_review(
+    paths: dict[str, Path],
+    project: dict,
+    reasoning_effort: str,
+    resume: bool,
+    timeout: int = DEFAULT_STYLE_TIMEOUT,
+    decision_source: Path | None = None,
+) -> dict:
+    style_dir = paths["jobs"] / "style"
+    style_dir.mkdir(parents=True, exist_ok=True)
+    context, candidates = style_context(paths, project)
+    context_path = style_dir / "style_context.json"
+    decision_path = style_dir / "style_decision.json"
+    write_json_atomic(context_path, context)
+    if decision_source is not None:
+        source = decision_source.resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid style decision JSON in {source}: {exc.msg} "
+                f"at line {exc.lineno}, column {exc.colno}"
+            ) from exc
+        decision = validate_style_decision(payload, candidates)
+        write_json_atomic(decision_path, decision)
+        failure_path = style_dir / "style_failure.json"
+        if failure_path.exists():
+            failure_path.unlink()
+        return decision
+    if resume and decision_path.exists():
+        return validate_style_decision(
+            json.loads(decision_path.read_text(encoding="utf-8")), candidates,
+        )
+    schema_path = style_dir / "style_output.schema.json"
+    write_json_atomic(schema_path, style_schema())
+    template = Path(__file__).with_name("translate_epub_style.md").read_text(encoding="utf-8")
+    prompt = (
+        template.rstrip() + "\n\n## Contexte JSON\n\n"
+        + json.dumps(context, ensure_ascii=False, separators=(",", ":")) + "\n"
+    )
+    prompt_path = style_dir / "style_prompt.md"
+    log_path = style_dir / "style.log"
+    prompt_path.write_text(prompt, encoding="utf-8")
+    command = [
+        "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
+        "--ignore-rules", "--color", "never", "-C", str(paths["root"]),
+        "--output-schema", str(schema_path), "-c", f'model_reasoning_effort="{reasoning_effort}"',
+        "-o", str(decision_path), "-",
+    ]
+    try:
+        with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
+            process = subprocess.run(
+                command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr, timeout=timeout,
+            )
+    except subprocess.TimeoutExpired as exc:
+        record_style_failure(
+            style_dir, "timeout", True,
+            f"Style Codex review timed out after {timeout} seconds.", log_path,
+        )
+        raise RuntimeError(f"Style Codex review timed out after {timeout} seconds; see {log_path}") from exc
+    if process.returncode != 0:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+        failure = classify_codex_failure(log_text)
+        record_style_failure(
+            style_dir, str(failure["kind"]), bool(failure["retryable"]),
+            str(failure["detail"]) or f"Style Codex review exited with {process.returncode}.",
+            log_path,
+        )
+        if failure["retryable"] is False:
+            raise RuntimeError(
+                f"Style review paused by {failure['kind']}: {failure['detail']}. "
+                "Resume later or provide --style-decision."
+            )
+        raise RuntimeError(f"Style Codex review exited with {process.returncode}; see {log_path}")
+    decision = validate_style_decision(
+        json.loads(decision_path.read_text(encoding="utf-8")), candidates,
+    )
+    write_json_atomic(decision_path, decision)
+    failure_path = style_dir / "style_failure.json"
+    if failure_path.exists():
+        failure_path.unlink()
+    return decision
+
+
+def recover_style_transaction(paths: dict[str, Path]) -> bool:
+    """Restore the state preceding an interrupted multi-file style update."""
+    style_dir = paths["jobs"] / "style"
+    journal_path = style_dir / "style_apply_transaction.json"
+    if not journal_path.exists():
+        return False
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    transaction_name = str(journal.get("transaction_directory", ""))
+    if not transaction_name or Path(transaction_name).name != transaction_name:
+        raise RuntimeError("Unsafe style transaction journal")
+    transaction_dir = style_dir / transaction_name
+    records = journal.get("files")
+    if not isinstance(records, list):
+        raise RuntimeError("Invalid style transaction journal")
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("target"), str):
+            raise RuntimeError("Invalid style transaction entry")
+        target = safe_resource_path(paths["root"], record["target"])
+        before_exists = record.get("before_exists") is True
+        before_sha = record.get("before_sha256", "")
+        if before_exists:
+            if target.is_file() and sha256_file(target) == before_sha:
+                continue
+            backup_name = str(record.get("backup", ""))
+            if not backup_name or Path(backup_name).name != backup_name:
+                raise RuntimeError(f"Missing style transaction backup for {record['target']}")
+            backup = transaction_dir / backup_name
+            if not backup.is_file() or sha256_file(backup) != before_sha:
+                raise RuntimeError(f"Invalid style transaction backup for {record['target']}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(backup, target)
+        elif target.exists():
+            if not target.is_file():
+                raise RuntimeError(f"Unsafe style transaction target: {record['target']}")
+            target.unlink()
+    journal_path.unlink()
+    if transaction_dir.exists():
+        shutil.rmtree(transaction_dir)
+    return True
+
+
+def apply_style_transaction(
+    paths: dict[str, Path],
+    replacements: dict[Path, bytes | None],
+) -> None:
+    """Apply a recoverable journaled set of atomic file replacements."""
+    if not replacements:
+        return
+    recover_style_transaction(paths)
+    root = paths["root"].resolve()
+    style_dir = paths["jobs"] / "style"
+    style_dir.mkdir(parents=True, exist_ok=True)
+    transaction_name = f".style-apply-{os.getpid()}-{time.time_ns()}"
+    transaction_dir = style_dir / transaction_name
+    transaction_dir.mkdir()
+    records = []
+    seen_targets = set()
+    for index, (raw_target, replacement) in enumerate(
+        sorted(replacements.items(), key=lambda item: str(item[0]))
+    ):
+        target = raw_target.resolve()
+        try:
+            target_rel = target.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise RuntimeError(f"Style transaction target escapes the project: {target}") from exc
+        if target_rel in seen_targets:
+            raise RuntimeError(f"Duplicate style transaction target: {target_rel}")
+        seen_targets.add(target_rel)
+        if target.exists() and not target.is_file():
+            raise RuntimeError(f"Style transaction target is not a file: {target_rel}")
+        before = target.read_bytes() if target.is_file() else None
+        backup_name = f"{index:04d}.before"
+        prepared_name = f"{index:04d}.after"
+        if before is not None:
+            (transaction_dir / backup_name).write_bytes(before)
+        if replacement is not None:
+            (transaction_dir / prepared_name).write_bytes(replacement)
+        records.append({
+            "target": target_rel,
+            "before_exists": before is not None,
+            "before_sha256": hashlib.sha256(before).hexdigest() if before is not None else "",
+            "after_exists": replacement is not None,
+            "after_sha256": (
+                hashlib.sha256(replacement).hexdigest() if replacement is not None else ""
+            ),
+            "backup": backup_name if before is not None else "",
+            "prepared": prepared_name if replacement is not None else "",
+        })
+    journal_path = style_dir / "style_apply_transaction.json"
+    write_json_atomic(journal_path, {
+        "transaction_directory": transaction_name,
+        "files": records,
+    })
+    try:
+        for record in records:
+            target = safe_resource_path(root, record["target"])
+            if record["after_exists"]:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(transaction_dir / record["prepared"], target)
+            elif target.exists():
+                target.unlink()
+        for record in records:
+            target = safe_resource_path(root, record["target"])
+            if record["after_exists"]:
+                if not target.is_file() or sha256_file(target) != record["after_sha256"]:
+                    raise RuntimeError(f"Style transaction verification failed: {record['target']}")
+            elif target.exists():
+                raise RuntimeError(f"Style transaction deletion failed: {record['target']}")
+    except Exception:
+        recover_style_transaction(paths)
+        raise
+    journal_path.unlink()
+    shutil.rmtree(transaction_dir)
+
+
+def apply_style_decision(paths: dict[str, Path], project: dict, decision: dict) -> dict:
+    recover_style_transaction(paths)
+    context, candidates = style_context(paths, project)
+    decision = validate_style_decision(decision, candidates)
+    edits_by_file: dict[str, list[dict]] = defaultdict(list)
+    applied = []
+    for change in decision["changes"]:
+        candidate = candidates[change["candidate_id"]]
+        for span in candidate["_spans"]:
+            edits_by_file[candidate["file"]].append({
+                **span,
+                "action": change["action"],
+                "replacement": change["replacement"],
+                "candidate_id": change["candidate_id"],
+            })
+        applied.append({
+            **change,
+            "file": candidate["file"],
+            "selector": candidate["selector"],
+            "property": candidate["property"],
+            "previous_value": candidate["current_value"],
+        })
+    before_hashes = {}
+    corrected_files = []
+    corrected_texts = {}
+    for rel, edits in edits_by_file.items():
+        path = safe_resource_path(paths["working"], rel)
+        text = path.read_text(encoding="utf-8")
+        before_hashes[rel] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        occupied = []
+        for edit in edits:
+            start = edit["start"] if edit["action"] == "remove" else edit["value_start"]
+            end = edit["end"] if edit["action"] == "remove" else edit["value_end"]
+            if any(start < previous_end and end > previous_start for previous_start, previous_end in occupied):
+                raise RuntimeError(f"Overlapping approved style edits in {rel}")
+            occupied.append((start, end))
+        for edit in sorted(edits, key=lambda value: value["start"], reverse=True):
+            if edit["action"] == "replace":
+                start, end, replacement = edit["value_start"], edit["value_end"], edit["replacement"]
+            else:
+                start, end, replacement = edit["start"], edit["end"], ""
+            text = text[:start] + replacement + text[end:]
+        corrected_texts[rel] = text
+        corrected_files.append(rel)
+    file_records = []
+    manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
+    manifest_by_rel = {row["relative_path"]: row for row in manifest_rows}
+    for summary in context["css_files"]:
+        rel = summary["file"]
+        working_path = paths["working"] / rel
+        source_path = paths["original"] / rel
+        before_sha = before_hashes.get(rel, summary["working_sha256"])
+        after_sha = (
+            hashlib.sha256(corrected_texts[rel].encode("utf-8")).hexdigest()
+            if rel in corrected_texts else sha256_file(working_path)
+        )
+        source_sha = sha256_file(source_path) if source_path.is_file() else ""
+        differs_from_source = source_sha != after_sha
+        file_records.append({
+            "file": rel,
+            "source_sha256": source_sha,
+            "before_sha256": before_sha,
+            "after_sha256": after_sha,
+            "changed_by_style_review": rel in corrected_files,
+            "differs_from_source": differs_from_source,
+        })
+        row = manifest_by_rel.get(rel)
+        if row is not None and differs_from_source:
+            row.update({
+                "category": "style",
+                "reason": "AI-reviewed low-risk EPUB style compatibility corrections",
+                "status": "pending",
+            })
+    report = {
+        "corrected": bool(applied),
+        "summary": decision["summary"],
+        "observations": decision["observations"],
+        "candidate_count": len(context["candidates"]),
+        "changes": applied,
+        "changed_files": sorted(corrected_files),
+        "files": file_records,
+    }
+    if applied:
+        replacements: dict[Path, bytes | None] = {
+            paths["working"] / rel: text.encode("utf-8")
+            for rel, text in corrected_texts.items()
+        }
+        replacements[paths["jobs"] / "translation_manifest.jsonl"] = "".join(
+            json.dumps(row, ensure_ascii=False) + "\n" for row in manifest_rows
+        ).encode("utf-8")
+        replacements[paths["jobs"] / "style" / "style_report.json"] = (
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        for stale in (
+            paths["jobs"] / "validation.json",
+            paths["jobs"] / "final_report.json",
+            paths["final"],
+        ):
+            replacements[stale] = None
+        apply_style_transaction(paths, replacements)
+    else:
+        write_json_atomic(paths["jobs"] / "style" / "style_report.json", report)
+    return report
+
+
+def style(
+    paths: dict[str, Path],
+    reasoning_effort: str,
+    resume: bool,
+    target_name: str | None = None,
+    target_code: str | None = None,
+    timeout: int = DEFAULT_STYLE_TIMEOUT,
+    decision_source: Path | None = None,
+) -> dict:
+    project_path = paths["jobs"] / "project.json"
+    if not project_path.exists():
+        inferred_code = target_code or paths["working"].name.rsplit(" ", 1)[-1]
+        inferred_name = target_name or resolve_language(inferred_code)[0]
+        bootstrap_legacy_project(paths, inferred_name, inferred_code)
+    project = json.loads(project_path.read_text(encoding="utf-8"))
+    recover_style_transaction(paths)
+    report_path = paths["jobs"] / "style" / "style_report.json"
+    if resume and decision_source is None and report_path.exists():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if all(
+            (paths["working"] / row["file"]).is_file()
+            and sha256_file(paths["working"] / row["file"]) == row["after_sha256"]
+            for row in report.get("files", [])
+        ):
+            return report
+    decision = run_style_review(
+        paths, project, reasoning_effort, resume, timeout, decision_source,
+    )
+    report = apply_style_decision(paths, project, decision)
+    report["reasoning_effort"] = reasoning_effort
+    write_json_atomic(report_path, report)
+    return report
+
+
 def source_editorial_context(paths: dict[str, Path], project: dict) -> dict:
     opf_root = parse_xml(paths["original"] / project["opf"]).getroot()
     metadata = []
@@ -2616,8 +3487,44 @@ def validate(paths: dict[str, Path]) -> dict:
     manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
     errors: list[str] = []
     warnings: list[str] = []
-    original_files = {p.relative_to(paths["original"]).as_posix() for p in paths["original"].rglob("*") if p.is_file()}
-    working_files = {p.relative_to(paths["working"]).as_posix() for p in paths["working"].rglob("*") if p.is_file()}
+    style_report_path = paths["jobs"] / "style" / "style_report.json"
+    authorized_style_files: set[str] = set()
+    if style_report_path.exists():
+        style_report = json.loads(style_report_path.read_text(encoding="utf-8"))
+        for row in style_report.get("files", []):
+            rel = row.get("file", "")
+            if not rel:
+                continue
+            try:
+                target = safe_resource_path(paths["working"], rel)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                continue
+            if not target.is_file():
+                errors.append(f"Style-reviewed resource is missing: {rel}")
+                continue
+            if sha256_file(target) != row.get("after_sha256"):
+                errors.append(f"Style-reviewed resource changed after approval: {rel}")
+            if row.get("differs_from_source"):
+                authorized_style_files.add(rel)
+        warnings.extend(
+            f"Style review: {value}"
+            for value in style_report.get("observations", [])
+            if clean_metadata_text(str(value))
+        )
+    for row in manifest_rows:
+        if row["category"] == "style" and row["relative_path"] not in authorized_style_files:
+            errors.append(f"Style resource lacks an approved final hash: {row['relative_path']}")
+    original_files = {
+        p.relative_to(paths["original"]).as_posix()
+        for p in paths["original"].rglob("*")
+        if p.is_file() and p.name != ".DS_Store"
+    }
+    working_files = {
+        p.relative_to(paths["working"]).as_posix()
+        for p in paths["working"].rglob("*")
+        if p.is_file() and p.name != ".DS_Store"
+    }
     if original_files != working_files:
         errors.append("Working resource inventory differs from the source")
     items, serial, spine = media_inventory(paths["working"], project["opf"])
@@ -2795,8 +3702,13 @@ def build(paths: dict[str, Path]) -> dict:
     editorial_report_path = paths["jobs"] / "editorial" / "editorial_report.json"
     if editorial_report_path.exists():
         editorial_stats = json.loads(editorial_report_path.read_text(encoding="utf-8"))
+    style_stats = {}
+    style_report_path = paths["jobs"] / "style" / "style_report.json"
+    if style_report_path.exists():
+        style_stats = json.loads(style_report_path.read_text(encoding="utf-8"))
     result = {"epub": str(paths["final"]), "files": len(final_files), "categories": counts,
               "statuses": statuses, "translation": run_stats, "editorial": editorial_stats,
+              "style": style_stats,
               "zip_integrity": "ok"}
     (paths["jobs"] / "final_report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2, default=dict) + "\n", encoding="utf-8")
     (paths["jobs"] / "translation_progress.md").write_text(
@@ -2811,6 +3723,7 @@ def build(paths: dict[str, Path]) -> dict:
         f"- Translation time: {run_stats.get('wall_seconds', 'n/a')} seconds\n"
         f"- Editorial title: {editorial_stats.get('metadata', {}).get('full_title', 'n/a')}\n"
         f"- Cover status: {editorial_stats.get('cover_status', 'n/a')}\n"
+        f"- Style corrections: {len(style_stats.get('changes', []))}\n"
         "- ZIP integrity: OK\n- Status: complete\n",
         encoding="utf-8",
     )
@@ -2826,7 +3739,11 @@ def main() -> int:
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     parser.add_argument("epub", type=Path)
     parser.add_argument("target_language")
-    parser.add_argument("--stage", choices=("all", "prepare", "translate", "apply", "editorial", "validate", "build"), default="all")
+    parser.add_argument(
+        "--stage",
+        choices=("all", "prepare", "translate", "apply", "editorial", "style", "validate", "build"),
+        default="all",
+    )
     parser.add_argument("--profile", choices=tuple(SPEED_PROFILES), default="standard")
     parser.add_argument("--workers", type=int)
     parser.add_argument("--batch-tokens", type=int)
@@ -2836,12 +3753,19 @@ def main() -> int:
                         help="Maximum seconds allowed for each Codex translation batch")
     parser.add_argument("--editorial-timeout", type=int, default=DEFAULT_EDITORIAL_TIMEOUT,
                         help="Maximum seconds allowed for the Codex metadata review")
+    parser.add_argument("--style-timeout", type=int, default=DEFAULT_STYLE_TIMEOUT,
+                        help="Maximum seconds allowed for the Codex style compatibility review")
     parser.add_argument("--reasoning-effort", choices=("low", "medium", "high"))
     parser.add_argument("--editorial-reasoning-effort", choices=("low", "medium", "high"), default="medium")
+    parser.add_argument("--style-reasoning-effort", choices=("low", "medium", "high"), default="medium")
     parser.add_argument("--cover-image", type=Path, help="Localized cover image to install during the editorial stage")
     parser.add_argument(
         "--editorial-decision", type=Path,
         help="Use a schema-valid editorial decision JSON instead of calling Codex",
+    )
+    parser.add_argument(
+        "--style-decision", type=Path,
+        help="Use a schema-valid style decision JSON instead of calling Codex",
     )
     parser.add_argument("--glossary", type=Path, help="Custom UTF-8 glossary used for translation batches")
     parser.add_argument("--book-name", help="Short folder name created under books/")
@@ -2876,6 +3800,12 @@ def main() -> int:
             result = editorial(paths, args.editorial_reasoning_effort, args.resume, args.cover_image,
                                target_name, target_code, args.editorial_timeout, args.editorial_decision)
             print_result("editorial", result)
+        if args.stage in {"all", "style"}:
+            result = style(
+                paths, args.style_reasoning_effort, args.resume, target_name, target_code,
+                args.style_timeout, args.style_decision,
+            )
+            print_result("style", result)
         if args.stage in {"all", "validate"}:
             result = validate(paths)
             print_result("validate", result)

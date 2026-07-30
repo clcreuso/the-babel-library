@@ -4,6 +4,10 @@ All notable changes to this project will be documented here.
 
 ## Unreleased
 
+- Added a bounded Codex style-compatibility stage between editorial review and validation. It
+  analyzes CSS against XHTML template usage, permits only enumerated low-risk transformations,
+  records approved resource hashes, and rejects later unapproved style changes. Root text/background
+  colors are coupled, and approved multi-file changes recover cleanly after an interruption.
 - Protected table- and block-based code listings from translation, versioned the new validation
   rule for existing projects, preserved multipart heading markup while harmonizing navigation,
   and improved semantic repair context without exceeding repair batch budgets.

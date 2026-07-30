@@ -33,6 +33,7 @@ class FastEpubPipelineTests(unittest.TestCase):
   </metadata>
   <manifest>
     <item id="chapter" href="OEBPS/ch01.xhtml" media-type="application/xhtml+xml"/>
+    <item id="css" href="OEBPS/book.css" media-type="text/css"/>
     <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
     <item id="cover" href="OEBPS/cover.jpg" media-type="image/jpeg"/>
@@ -41,11 +42,11 @@ class FastEpubPipelineTests(unittest.TestCase):
 </package>""",
             "OEBPS/ch01.xhtml": """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
-<head><title>Tiny Book</title></head><body>
+<head><title>Tiny Book</title><link href="book.css" rel="stylesheet" type="text/css"/></head><body class="book">
 <h1 id="chapter-one">Object Design</h1>
 <p>A <code>Gear</code> sends messages.</p>
 <table class="processedcode"><tr><td class="codeline">puts "Hello world"</td></tr></table>
-<p><img src="diagram.png" alt="Useful diagram"/></p>
+<p><img class="figure" src="diagram.png" alt="Useful diagram"/></p>
 </body></html>""",
             "OEBPS/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
@@ -62,6 +63,26 @@ class FastEpubPipelineTests(unittest.TestCase):
 </navMap></ncx>""",
             "OEBPS/diagram.png": b"not-a-real-png-but-preserved",
             "OEBPS/cover.jpg": b"source-cover",
+            "OEBPS/book.css": b"""@font-face {
+  font-family: RemoteBook;
+  src: url(https://example.invalid/book.woff);
+}
+body.book {
+  color: #333;
+  background-color: #fff;
+  min-height: 450px;
+}
+.processedcode {
+  overflow-x: scroll;
+  page-break-inside: avoid;
+  word-break: keep-all;
+}
+img.figure {
+  width: 600px;
+  max-width: 100%;
+  height: 400px;
+}
+""",
         }
         epub = root / "tiny.epub"
         with zipfile.ZipFile(epub, "w") as archive:
@@ -193,6 +214,214 @@ class FastEpubPipelineTests(unittest.TestCase):
             pipeline.safe_book_name('"Looks Good to Me" (for \u200b \u200b)'),
             "Looks Good to Me",
         )
+
+    def test_ai_style_review_applies_only_approved_candidates_and_validates_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
+            pipeline.write_jsonl(
+                paths["jobs"] / "translations.jsonl",
+                [{"id": row["id"], "target": row["source"], "source": "test"} for row in segments],
+            )
+            pipeline.apply(paths)
+
+            context, candidates = pipeline.style_context(paths, project)
+            self.assertGreaterEqual(len(context["candidates"]), 7)
+            kinds = {row["kind"] for row in context["candidates"]}
+            self.assertTrue({
+                "remote-font-face", "root-color", "root-fixed-height",
+                "code-overflow", "code-pagination", "code-wrapping",
+                "image-fixed-height",
+            } <= kinds)
+            root_colors = [
+                candidate for candidate in candidates.values()
+                if candidate["kind"] == "root-color"
+            ]
+            self.assertEqual(len(root_colors), 1)
+            self.assertEqual(len(root_colors[0]["_spans"]), 2)
+            changes = []
+            for candidate in context["candidates"]:
+                allowed = candidate["allowed_actions"][0]
+                changes.append({
+                    "candidate_id": candidate["candidate_id"],
+                    "action": allowed["action"],
+                    "replacement": allowed["replacement"],
+                    "reason": f"Low-risk correction for {candidate['kind']}.",
+                })
+            decision = {
+                "summary": "Remove only rendering constraints identified by the bounded audit.",
+                "changes": changes,
+                "observations": ["The relative maximum image width remains unchanged."],
+            }
+            decision_path = root / "style-decision.json"
+            pipeline.write_json_atomic(decision_path, decision)
+            paths["final"].write_bytes(b"stale")
+            (paths["jobs"] / "validation.json").write_text('{"errors": []}', encoding="utf-8")
+            with patch.object(pipeline.subprocess, "run") as run:
+                report = pipeline.style(
+                    paths, "medium", resume=False, decision_source=decision_path,
+                )
+            run.assert_not_called()
+            self.assertTrue(report["corrected"])
+            self.assertFalse(paths["final"].exists())
+            self.assertFalse((paths["jobs"] / "validation.json").exists())
+
+            css = (paths["working"] / "OEBPS" / "book.css").read_text(encoding="utf-8")
+            self.assertNotIn("@font-face", css)
+            self.assertNotIn("background-color", css)
+            self.assertNotIn("color: #333", css)
+            self.assertNotIn("min-height", css)
+            self.assertIn("overflow-x: visible", css)
+            self.assertIn("page-break-inside: auto", css)
+            self.assertIn("word-break: normal", css)
+            self.assertIn("max-width: 100%", css)
+            self.assertIn("height: auto", css)
+            manifest = {
+                row["relative_path"]: row
+                for row in pipeline.read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
+            }
+            self.assertEqual(manifest["OEBPS/book.css"]["category"], "style")
+            self.assertEqual(pipeline.validate(paths)["errors"], [])
+
+            with (paths["working"] / "OEBPS" / "book.css").open("a", encoding="utf-8") as stream:
+                stream.write("\n/* unapproved */\n")
+            with self.assertRaisesRegex(RuntimeError, "Validation failed"):
+                pipeline.validate(paths)
+            validation = json.loads(
+                (paths["jobs"] / "validation.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(any(
+                "changed after approval" in error for error in validation["errors"]
+            ))
+
+    def test_root_text_and_background_colors_share_one_candidate_across_selectors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            css_path = paths["working"] / "OEBPS" / "book.css"
+            css_path.write_text(
+                "html { background-color: #fff; }\n"
+                "body.book { color: #333; }\n",
+                encoding="utf-8",
+            )
+
+            _, candidates = pipeline.style_context(paths, project)
+            root_colors = [
+                candidate for candidate in candidates.values()
+                if candidate["kind"] == "root-color"
+            ]
+            self.assertEqual(len(root_colors), 1)
+            self.assertEqual(len(root_colors[0]["_spans"]), 2)
+            pipeline.apply_style_decision(paths, project, {
+                "summary": "Release the paired root colors.",
+                "changes": [{
+                    "candidate_id": root_colors[0]["candidate_id"],
+                    "action": "remove",
+                    "replacement": "",
+                    "reason": "Text and background must follow the reader theme together.",
+                }],
+                "observations": [],
+            })
+            corrected_css = css_path.read_text(encoding="utf-8")
+            self.assertNotIn("color: #333", corrected_css)
+            self.assertNotIn("background-color", corrected_css)
+
+    def test_interrupted_style_transaction_restores_every_target_on_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            working = root / "working fr"
+            jobs = root / "translation jobs fr"
+            working.mkdir()
+            jobs.mkdir()
+            first = working / "a.css"
+            second = working / "b.css"
+            first.write_text("a-before", encoding="utf-8")
+            second.write_text("b-before", encoding="utf-8")
+            paths = {
+                "root": root,
+                "working": working,
+                "jobs": jobs,
+            }
+            real_replace = pipeline.os.replace
+
+            def interrupt_second_css(source, destination):
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    destination_path.resolve() == second.resolve()
+                    and source_path.name.endswith(".after")
+                ):
+                    raise KeyboardInterrupt("simulated process interruption")
+                return real_replace(source, destination)
+
+            with patch.object(pipeline.os, "replace", side_effect=interrupt_second_css):
+                with self.assertRaises(KeyboardInterrupt):
+                    pipeline.apply_style_transaction(paths, {
+                        first: b"a-after",
+                        second: b"b-after",
+                    })
+
+            self.assertEqual(first.read_text(encoding="utf-8"), "a-after")
+            self.assertEqual(second.read_text(encoding="utf-8"), "b-before")
+            self.assertTrue(
+                (jobs / "style" / "style_apply_transaction.json").exists()
+            )
+
+            self.assertTrue(pipeline.recover_style_transaction(paths))
+            self.assertEqual(first.read_text(encoding="utf-8"), "a-before")
+            self.assertEqual(second.read_text(encoding="utf-8"), "b-before")
+            self.assertFalse(
+                (jobs / "style" / "style_apply_transaction.json").exists()
+            )
+
+    def test_style_decision_rejects_unknown_or_unapproved_edits(self):
+        candidate = {
+            "_allowed": {("replace", "visible")},
+        }
+        base = {
+            "summary": "Safe review.",
+            "observations": [],
+            "changes": [{
+                "candidate_id": "known",
+                "action": "replace",
+                "replacement": "hidden",
+                "reason": "Not actually allowed.",
+            }],
+        }
+        with self.assertRaisesRegex(ValueError, "Unauthorized"):
+            pipeline.validate_style_decision(base, {"known": candidate})
+        base["changes"][0]["candidate_id"] = "unknown"
+        base["changes"][0]["replacement"] = "visible"
+        with self.assertRaisesRegex(ValueError, "Unknown"):
+            pipeline.validate_style_decision(base, {"known": candidate})
+
+    def test_noop_style_review_keeps_existing_validation_and_final_epub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            decision = {
+                "summary": "No safe correction selected.",
+                "changes": [],
+                "observations": [],
+            }
+            decision_path = root / "style-decision.json"
+            pipeline.write_json_atomic(decision_path, decision)
+            validation_path = paths["jobs"] / "validation.json"
+            validation_path.write_text('{"errors": []}', encoding="utf-8")
+            paths["final"].write_bytes(b"existing-final")
+            report = pipeline.style(
+                paths, "medium", resume=False, decision_source=decision_path,
+            )
+            self.assertFalse(report["corrected"])
+            self.assertEqual(paths["final"].read_bytes(), b"existing-final")
+            self.assertTrue(validation_path.exists())
 
     def test_custom_glossary_and_keep_source(self):
         with tempfile.TemporaryDirectory() as directory:

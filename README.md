@@ -5,7 +5,7 @@
 
 A fast, resumable EPUB translation pipeline powered by the Codex CLI.
 
-The translator extracts reader-visible text into balanced JSON batches, runs parallel output-only Codex workers, safely restores inline markup, performs a separate editorial metadata review, validates the translated EPUB, and rebuilds a standards-compliant archive.
+The translator extracts reader-visible text into balanced JSON batches, runs parallel output-only Codex workers, safely restores inline markup, performs separate editorial metadata and bounded style-compatibility reviews, validates the translated EPUB, and rebuilds a standards-compliant archive.
 
 > [!IMPORTANT]
 > Translate only books you are legally allowed to modify. Book files, extracted content, covers, and generated translations are deliberately excluded from this repository.
@@ -17,6 +17,9 @@ The translator extracts reader-visible text into balanced JSON batches, runs par
 - Immutable placeholders protect markup, code, links, and identifiers.
 - Translation memory shared across local books.
 - Separate editorial pass for title, subtitle, description, subjects, and metadata cleanup.
+- Bounded AI style review that can apply only pre-approved, low-risk CSS transformations backed by
+  XHTML template usage and final resource hashes. Paired root text/background colors are atomic,
+  as is the recoverable multi-file application of approved style changes.
 - Optional localized cover installation; only the selected OPF cover can be replaced, and malformed
   EPUB 2/3 cover declarations are normalized without changing the selected artwork.
 - EPUB 2 named-entity support with DOCTYPE and processing-instruction preservation.
@@ -81,7 +84,7 @@ The input EPUB is never moved or deleted. The pipeline works from the canonical 
 | `standard` | 8 | ~6,000 tokens | low | General use |
 | `editorial` | 4 | ~3,500 tokens | medium | Smaller, more deliberate batches |
 
-Every setting can be overridden with `--workers`, `--batch-tokens`, `--repair-tokens`, `--max-retries`, and `--reasoning-effort`. Stalled model calls are bounded by `--worker-timeout` (30 minutes per batch) and `--editorial-timeout` (10 minutes) by default.
+Every setting can be overridden with `--workers`, `--batch-tokens`, `--repair-tokens`, `--max-retries`, and `--reasoning-effort`. Stalled model calls are bounded by `--worker-timeout` (30 minutes per batch), `--editorial-timeout` (10 minutes), and `--style-timeout` (10 minutes) by default.
 
 ## Resume a run
 
@@ -160,10 +163,33 @@ images remain preserved. The replacement must use the same declared image format
 cover prompt includes the source pixel geometry; differing dimensions or aspect ratio produce
 review warnings rather than silently distorting or rejecting otherwise useful artwork.
 
+## Style compatibility review
+
+After editorial metadata, the normal pipeline inventories CSS declarations and their actual use in
+XHTML templates. Codex receives only bounded candidates for issues such as clipped code, impossible
+pagination, fixed image heights, root colors that conflict with night mode, and unavailable remote
+fonts:
+
+```sh
+python3 epub_translate.py "books/Book title/original.epub" French --stage style
+```
+
+The model cannot return arbitrary CSS. Every selected change must match a candidate identifier and
+an allowed transformation; the pipeline then records before/after hashes and validation rejects any
+later unapproved change. Relative line-length constraints and publisher typography are preserved
+unless they demonstrably prevent reflow or access to content.
+
+As with metadata, a reviewed decision can be supplied explicitly:
+
+```sh
+python3 epub_translate.py "books/Book title/original.epub" French \
+  --stage style --style-decision "/path/to/style-decision.json"
+```
+
 ## Pipeline stages
 
 ```text
-prepare → translate → apply → editorial → validate → build
+prepare → translate → apply → editorial → style → validate → build
 ```
 
 Each stage can be selected with `--stage`. See the detailed [French workflow guide](translate_epub.md) for generated files, repair behavior, and operational details.

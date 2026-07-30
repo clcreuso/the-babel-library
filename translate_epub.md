@@ -43,6 +43,7 @@ Les opérations suivantes sont désormais réalisées une seule fois par un prog
 - harmonisation des titres et génération de la navigation ;
 - relecture éditoriale approfondie des métadonnées par une mission Codex séparée ;
 - localisation de la couverture à partir de la couverture originale lorsque Codex fournit `--cover-image` ;
+- analyse IA bornée des styles et de leur usage dans les gabarits XHTML ;
 - validation XML et structurelle ;
 - reconstruction et contrôle ZIP.
 
@@ -109,7 +110,34 @@ images restent strictement préservées. Cette étape met aussi à jour la page 
 `calibre:title_sort` et `calibre:subtitle`. Elle préserve l’ISBN, les identifiants et les noms propres
 qui ne sont pas remis en cause par les sources du livre.
 
-### 5. Validation
+### 5. Compatibilité des styles
+
+```sh
+python3 epub_translate.py "livre.epub" French --stage style
+```
+
+Cette mission Codex distincte reçoit un inventaire compact des CSS et de leur usage réel dans les
+gabarits XHTML. Elle recherche uniquement les contraintes qui peuvent masquer du contenu, bloquer
+la pagination, empêcher la redistribution, déformer les images, contrarier les modes nuit/sépia ou
+dépendre de ressources web absentes de l’EPUB.
+
+Le modèle ne peut pas produire de CSS libre : il choisit parmi des candidats déterministes et des
+transformations explicitement autorisées. Chaque décision est validée, les hashes avant/après sont
+enregistrés et toute modification ultérieure non approuvée bloque la validation. Les couleurs de
+texte et de fond imposées à la racine d’une même feuille forment un seul candidat indissociable,
+même lorsqu’elles utilisent des sélecteurs distincts comme `html` et `body`. L’application des CSS,
+du manifeste et du rapport est transactionnelle : une interruption restaure l’état précédent à la
+reprise.
+
+La décision et le rapport se trouvent dans `translation jobs fr/style/`. Une décision relue peut
+être injectée sans contourner les mêmes contrôles :
+
+```sh
+python3 epub_translate.py "livre.epub" French \
+  --stage style --style-decision "style-decision.json"
+```
+
+### 6. Validation
 
 ```sh
 python3 epub_translate.py "livre.epub" French --stage validate
@@ -117,7 +145,7 @@ python3 epub_translate.py "livre.epub" French --stage validate
 
 Une seule passe compare les structures, attributs, blocs protégés, ressources, métadonnées et documents du spine. La reconstruction est bloquée si une erreur est détectée.
 
-### 6. Reconstruction
+### 7. Reconstruction
 
 ```sh
 python3 epub_translate.py "livre.epub" French --stage build
@@ -168,14 +196,17 @@ Les anciens dossiers de travail sont archivés avec un horodatage avant la nouve
 - `--workers` contrôle le nombre maximal de traductions simultanées ;
 - `--batch-tokens`, `--repair-tokens` et `--reasoning-effort` permettent de remplacer les valeurs du profil ;
 - `--editorial-reasoning-effort` règle uniquement la relecture des métadonnées (moyen par défaut) ;
+- `--style-reasoning-effort` règle uniquement l’analyse de compatibilité CSS (moyen par défaut) ;
 - `--cover-image` installe une couverture localisée pendant la passe éditoriale ;
 - `--editorial-decision` importe une décision éditoriale JSON validée par le même schéma, utile
   lorsqu’un humain ou l’agent superviseur doit reprendre la main sans figer cette décision dans le code ;
+- `--style-decision` importe une décision de style bornée et validée ;
 - `--glossary` utilise un glossaire Markdown UTF-8 propre au livre ou au domaine ;
 - `--keep-source` reste accepté pour compatibilité, mais n’a plus d’effet : le fichier EPUB d’entrée est toujours conservé ;
 - `--max-retries` relance uniquement les segments invalides sous forme de micro-lots.
 - `--worker-timeout` limite chaque lot Codex à 1 800 secondes par défaut ; un dépassement est traité comme un lot à réparer ;
 - `--editorial-timeout` limite la relecture éditoriale à 600 secondes par défaut.
+- `--style-timeout` limite l’analyse stylistique à 600 secondes par défaut.
 
 ## Fichiers de suivi
 
@@ -198,6 +229,10 @@ editorial/metadata_decision.json
 editorial/cover_prompt.md
 editorial/editorial_report.json
 editorial/editorial_failure.json  # présent seulement après un échec
+style/style_context.json
+style/style_decision.json
+style/style_report.json
+style/style_failure.json           # présent seulement après un échec
 validation.json
 final_report.json
 ```
@@ -208,6 +243,10 @@ final_report.json
 éditorial externe, `editorial/editorial_failure.json` conserve la cause et une piste de reprise.
 `editorial/metadata_decision.json` reste la mémoire éditoriale faisant autorité ; elle peut être
 réutilisée avec `--resume` ou fournie explicitement avec `--editorial-decision`.
+
+`style/style_context.json` contient l’inventaire des conflits possibles et l’usage des classes dans
+les gabarits. `style/style_decision.json` conserve la décision IA bornée ; `style/style_report.json`
+enregistre les corrections appliquées et les hashes approuvés.
 
 La déclaration de couverture est normalisée vers l’identifiant réel du manifeste EPUB 2 et, pour
 EPUB 3, la propriété `cover-image` est ajoutée si nécessaire. Le prompt de couverture mentionne les
