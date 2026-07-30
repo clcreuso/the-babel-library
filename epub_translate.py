@@ -50,6 +50,7 @@ MAX_EPUB_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_COMPRESSION_RATIO = 1_000
 DEFAULT_WORKER_TIMEOUT = 30 * 60
 DEFAULT_EDITORIAL_TIMEOUT = 10 * 60
+PROTECTION_SCHEMA_VERSION = 2
 
 # Only unmistakably terminal failures belong here. Unknown Codex failures remain
 # retryable because model and transport behavior can evolve independently of this
@@ -201,8 +202,6 @@ def safe_book_name(value: str) -> str:
 
 def short_book_name(epub: Path) -> str:
     resolved = epub.resolve()
-    if resolved.parent.parent.name == "books":
-        return resolved.parent.name
     title = epub_book_title(resolved)
     if title:
         title = re.split(r"\s*(?::|—|–)\s*", title, maxsplit=1)[0]
@@ -212,10 +211,24 @@ def short_book_name(epub: Path) -> str:
     return safe_book_name(filename)
 
 
-def project_paths(epub: Path, target_code: str, book_name: str | None = None) -> dict[str, Path]:
+PROJECT_BOOKS_ROOT = Path(__file__).resolve().parent / "books"
+
+
+def project_paths(
+    epub: Path,
+    target_code: str,
+    book_name: str | None = None,
+    *,
+    books_root: Path | None = None,
+) -> dict[str, Path]:
     resolved = epub.resolve()
-    books_root = resolved.parent.parent if resolved.parent.parent.name == "books" else resolved.parent / "books"
-    if book_name is None and resolved.parent.parent.name == "books":
+    books_root = (books_root or PROJECT_BOOKS_ROOT).resolve()
+    existing_project = (
+        book_name is None
+        and resolved.name == "original.epub"
+        and (resolved.parent / f"translation jobs {target_code}" / "project.json").is_file()
+    )
+    if existing_project:
         root = resolved.parent
     else:
         root = books_root / safe_book_name(book_name or short_book_name(resolved))
@@ -375,6 +388,35 @@ def has_protected_class(element: ET.Element) -> bool:
     return bool(classes & PROTECTED_CLASSES)
 
 
+def has_code_container_class(element: ET.Element) -> bool:
+    container_tags = BLOCK_TAGS | {
+        "div", "section", "figure", "table", "thead", "tbody", "tfoot", "tr",
+    }
+    if local_name(element.tag) not in container_tags:
+        return False
+    classes = set(element.attrib.get("class", "").split())
+    # Some EPUB generators render listings as tables rather than semantic
+    # ``code`` or ``pre`` elements. Delimited and conventional compound names
+    # avoid silently classifying unrelated values such as ``barcode`` as code.
+    conventional_compounds = {
+        "codeblock", "codeexample", "codeline", "codelisting", "codesample",
+        "codetable", "codetext", "processedcode", "programcode", "sourcecode",
+    }
+    return any(
+        value.casefold() in conventional_compounds
+        or "code" in re.split(r"[-_:]+", value.casefold())
+        for value in classes
+    )
+
+
+def element_is_protected(element: ET.Element, *, include_code_containers: bool = True) -> bool:
+    return (
+        local_name(element.tag) in PROTECTED_TAGS
+        or has_protected_class(element)
+        or (include_code_containers and has_code_container_class(element))
+    )
+
+
 def flatten_content(element: ET.Element) -> tuple[str, list[str], list[tuple[ET.Element, str]]]:
     """Return mixed content with immutable placeholders and writable text slots."""
     parts: list[str] = []
@@ -394,7 +436,7 @@ def flatten_content(element: ET.Element) -> tuple[str, list[str], list[tuple[ET.
             tag = local_name(child.tag)
             counter += 1
             number = counter
-            if tag in PROTECTED_TAGS or has_protected_class(child) or namespace(child.tag).endswith("MathML"):
+            if element_is_protected(child) or namespace(child.tag).endswith("MathML"):
                 token = f"⟦LOCK:{number}⟧"
                 parts.append(token)
                 tokens.append(token)
@@ -431,7 +473,7 @@ def has_descendant_block(element: ET.Element) -> bool:
 def ancestor_is_protected(element: ET.Element, parents: dict[int, ET.Element]) -> bool:
     current = parents.get(id(element))
     while current is not None:
-        if local_name(current.tag) in PROTECTED_TAGS or has_protected_class(current):
+        if element_is_protected(current):
             return True
         current = parents.get(id(current))
     return False
@@ -441,15 +483,26 @@ def make_segment_id(rel: str, kind: str, path: list[int], extra: str = "") -> st
     return f"s-{stable_hash(f'{rel}|{kind}|{path}|{extra}', 16)}"
 
 
-def extract_document_segments(path: Path, rel: str, media_type: str) -> list[dict]:
+def extract_document_segments(
+    path: Path,
+    rel: str,
+    media_type: str,
+    code_container_counts: dict[str, int] | None = None,
+) -> list[dict]:
     tree = parse_xml(path)
     root = tree.getroot()
+    if code_container_counts is not None:
+        count = sum(1 for element in root.iter() if has_code_container_class(element))
+        if count:
+            code_container_counts[rel] = count
     paths, parents = element_paths(root)
     candidates = {"text", "tspan"} if media_type == "image/svg+xml" else BLOCK_TAGS
     segments: list[dict] = []
     for element in root.iter():
         tag = local_name(element.tag)
-        if tag not in candidates or ancestor_is_protected(element, parents) or has_protected_class(element):
+        if (tag not in candidates
+                or ancestor_is_protected(element, parents)
+                or element_is_protected(element)):
             continue
         if tag in BLOCK_TAGS and has_descendant_block(element):
             continue
@@ -457,7 +510,11 @@ def extract_document_segments(path: Path, rel: str, media_type: str) -> list[dic
             continue
         source, placeholders, _ = flatten_content(element)
         source = model_text(source)
-        if not natural_language_present(source):
+        heading_word_present = (
+            tag in {"h1", "h2", "h3", "h4", "h5", "h6"}
+            and any(len(word) > 2 for word in WORD_RE.findall(PLACEHOLDER_RE.sub(" ", source)))
+        )
+        if not natural_language_present(source) and not heading_word_present:
             continue
         path_value = paths[id(element)]
         segment_id = make_segment_id(rel, "element", path_value)
@@ -574,6 +631,8 @@ def package_source_language(original: Path, opf_rel: str) -> tuple[str, str]:
 
 def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Path], force: bool,
             resume: bool, keep_input: bool = False, glossary_path: Path | None = None) -> dict:
+    # Kept in the public signature for backward CLI/API compatibility. Input EPUBs are always retained.
+    _ = keep_input
     input_epub = epub.resolve()
     if not input_epub.is_file():
         raise FileNotFoundError(input_epub)
@@ -584,8 +643,6 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
             raise RuntimeError("Encrypted/DRM-protected EPUBs are not supported by the fast pipeline")
     paths["root"].mkdir(parents=True, exist_ok=True)
     canonical_source = paths["source"]
-    input_is_in_books = any(part.casefold() == "books" for part in input_epub.parts)
-    remove_input_after_prepare = input_epub != canonical_source and not keep_input and not input_is_in_books
     if input_epub != canonical_source:
         if canonical_source.exists():
             if input_epub.read_bytes() != canonical_source.read_bytes():
@@ -598,8 +655,6 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
     epub = canonical_source
     if resume and (paths["jobs"] / "segments.jsonl").exists():
         project = json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
-        if remove_input_after_prepare:
-            input_epub.unlink()
         return project
     existing = [paths["original"], paths["working"], paths["jobs"]]
     if any(path.exists() for path in existing):
@@ -618,6 +673,7 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
     items, serial, spine = media_inventory(paths["original"], opf_rel)
     segments: list[dict] = []
     file_has_segments: set[str] = set()
+    code_container_counts: dict[str, int] = {}
     excluded_serial_content = {rel for rel in serial if rel != opf_rel}
     for rel, item in sorted(items.items()):
         media_type = item["media_type"]
@@ -625,7 +681,9 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
             continue
         if media_type in {"application/xhtml+xml", "application/x-dtbook+xml", "image/svg+xml"}:
             try:
-                extracted = extract_document_segments(paths["original"] / rel, rel, media_type)
+                extracted = extract_document_segments(
+                    paths["original"] / rel, rel, media_type, code_container_counts,
+                )
             except (ET.ParseError, UnicodeError) as exc:
                 error_report = {"file": rel, "media_type": media_type, "error": str(exc)}
                 write_json_atomic(paths["jobs"] / "preparation_error.json", error_report)
@@ -693,19 +751,24 @@ def prepare(epub: Path, target_name: str, target_code: str, paths: dict[str, Pat
         "spine_files": spine,
         "segments": len(segments),
         "files": len(all_files),
+        "protection_schema_version": PROTECTION_SCHEMA_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     (paths["jobs"] / "project.json").write_text(json.dumps(project, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     counts = Counter(row["category"] for row in manifest_rows)
+    protected_code_details = "".join(
+        f"  - {rel}: {count}\n" for rel, count in sorted(code_container_counts.items())
+    )
     (paths["jobs"] / "translation_progress.md").write_text(
         "# Fast EPUB translation\n\n"
         f"- Files: {len(all_files)}\n- Segments: {len(segments)}\n"
         f"- Parallel content files: {counts['parallel']}\n- Generated serial files: {counts['serial-final']}\n"
-        f"- Preserved files: {counts['preserve']}\n- Status: prepared\n",
+        f"- Preserved files: {counts['preserve']}\n"
+        f"- Protected code containers skipped: {sum(code_container_counts.values())}\n"
+        f"{protected_code_details}"
+        "- Status: prepared\n",
         encoding="utf-8",
     )
-    if remove_input_after_prepare:
-        input_epub.unlink()
     return project
 
 
@@ -860,7 +923,11 @@ def make_batches(segments: list[dict], max_tokens: int) -> list[list[dict]]:
     current: list[dict] = []
     used = 0
     for segment in segments:
-        cost = estimate_tokens(segment["source"]) + 24
+        cost = (
+            estimate_tokens(segment["source"])
+            + estimate_tokens(segment.get("_previous_rejected_target", ""))
+            + 24
+        )
         if current and used + cost > max_tokens:
             batches.append(current)
             current, used = [], 0
@@ -934,12 +1001,24 @@ def relevant_glossary(glossary: str, batch: list[dict]) -> str:
 
 def build_prompt(template: str, glossary: str, project: dict, batch: list[dict],
                  repair_reasons: dict[str, str] | None = None) -> str:
-    payload = [{"id": row["id"], "file": row["file"], "kind": row["kind"], "source": row["source"]} for row in batch]
+    payload = []
+    for row in batch:
+        item = {
+            "id": row["id"], "file": row["file"],
+            "kind": row["kind"], "source": row["source"],
+        }
+        previous_target = row.get("_previous_rejected_target")
+        if previous_target:
+            item["previous_rejected_target"] = previous_target
+        payload.append(item)
     repair = ""
     if repair_reasons:
         repair = (
             "\n\n## Corrections demandées\n\n"
-            "Ces segments ont échoué à la validation précédente. Corrige précisément l’erreur indiquée :\n\n"
+            "Ces segments ont échoué à la validation précédente. Corrige précisément l’erreur indiquée. "
+            "Lorsqu’un champ `previous_rejected_target` est présent, utilise-le uniquement pour comprendre "
+            "l’échec : repars du champ `source`, conserve la relation sémantique de chaque fragment protégé "
+            "et reformule le texte naturel autour des marqueurs sans échanger leurs rôles.\n\n"
             + json.dumps(repair_reasons, ensure_ascii=False, separators=(",", ":"))
         )
     return (
@@ -1029,10 +1108,19 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
         result["translations"] = translations
         result["invalid"] = invalid
         result["response_errors"] = response_errors
+        result["invalid_targets"] = {
+            row["id"]: normalize_space(row["target"])
+            for row in payload.get("translations", [])
+            if isinstance(row, dict)
+            and row.get("id") in invalid
+            and isinstance(row.get("target"), str)
+            and normalize_space(row["target"])
+        }
     except Exception as exc:
         result["error"] = str(exc)
         result["invalid"] = {row["id"]: result["error"] for row in batch}
         result["translations"] = {}
+        result["invalid_targets"] = {}
     result["valid_segments"] = len(result["translations"])
     result["invalid_segments"] = len(result["invalid"])
     return result
@@ -1195,11 +1283,16 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                 "segment_ids": [row["id"] for row in batch],
             })
             (paths["jobs"] / "batches" / f"{batch_id}.json").write_text(
-                json.dumps(batch, ensure_ascii=False) + "\n", encoding="utf-8"
+                json.dumps([
+                    {key: value for key, value in row.items() if not key.startswith("_")}
+                    for row in batch
+                ], ensure_ascii=False) + "\n",
+                encoding="utf-8",
             )
         write_json_atomic(paths["jobs"] / "batches.json", batch_rows)
 
         next_pending: dict[str, str] = {}
+        next_rejected_targets: dict[str, str] = {}
         wave_started = time.time()
         valid_in_wave = 0
         blocked_in_wave = 0
@@ -1250,6 +1343,9 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                 for segment_id, reason in invalid.items():
                     if segment_id in segments_by_id:
                         next_pending[segment_id] = reason
+                        rejected_target = result.get("invalid_targets", {}).get(segment_id)
+                        if rejected_target:
+                            next_rejected_targets[segment_id] = rejected_target
                 if result.get("retryable") is False:
                     blocked_in_wave += len(invalid)
                 if result.get("retryable") is False and blocking_failure is None:
@@ -1261,7 +1357,8 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                     for pending_future in futures:
                         if pending_future is not future and not pending_future.done():
                             pending_future.cancel()
-                results.append({k: v for k, v in result.items() if k not in {"translations", "invalid"}} | {
+                results.append({k: v for k, v in result.items()
+                                if k not in {"translations", "invalid", "invalid_targets"}} | {
                     "valid_segments": len(translations),
                     "invalid_segments": len(invalid),
                     "invalid_reasons": Counter(invalid.values()),
@@ -1279,7 +1376,16 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
             "blocked_segments": blocked_in_wave,
             "wall_seconds": round(time.time() - wave_started, 1),
         })
-        pending = [segments_by_id[segment_id] for segment_id in next_pending]
+        pending = [
+            {
+                **segments_by_id[segment_id],
+                **(
+                    {"_previous_rejected_target": next_rejected_targets[segment_id]}
+                    if segment_id in next_rejected_targets else {}
+                ),
+            }
+            for segment_id in next_pending
+        ]
         pending_reasons = next_pending
         if blocking_failure is not None:
             break
@@ -1541,13 +1647,35 @@ def id_heading_map(original: Path, working: Path, rels: list[str]) -> dict[tuple
     return result
 
 
+def comparable_navigation_text(value: str) -> str:
+    """Compare labels despite punctuation and accidental internal spacing."""
+    return re.sub(r"[\W_]+", "", normalize_space(value).casefold())
+
+
+def flexible_navigation_match(value: str, expected: str, *, at_start: bool = False,
+                              at_end: bool = False) -> re.Match[str] | None:
+    """Locate navigation text while tolerating punctuation and spacing inside it."""
+    comparable = comparable_navigation_text(expected)
+    if not comparable:
+        return None
+    pattern = r"[\W_]*".join(re.escape(character) for character in comparable)
+    if at_start:
+        pattern = "^" + pattern
+    if at_end:
+        pattern += "$"
+    return re.search(pattern, normalize_space(value).casefold())
+
+
 def translated_label(source_label: str, source_title: str, target_title: str) -> str | None:
     source_label_n = normalize_space(source_label)
     source_title_n = normalize_space(source_title)
-    if source_label_n.casefold() == source_title_n.casefold():
+    if comparable_navigation_text(source_label_n) == comparable_navigation_text(source_title_n):
         return target_title
-    if source_label_n.casefold().endswith(source_title_n.casefold()):
-        prefix = source_label_n[: len(source_label_n) - len(source_title_n)]
+    suffix_match = flexible_navigation_match(source_label_n, source_title_n, at_end=True)
+    if suffix_match:
+        prefix = source_label_n[:suffix_match.start()]
+        if prefix and prefix[-1].isalnum():
+            return None
         return prefix + target_title
     return None
 
@@ -1584,18 +1712,23 @@ def document_title_replacement(source_label: str, rel: str,
         if candidate and candidate not in source_title_variants:
             source_title_variants.append(candidate)
     for source_title_variant in source_title_variants:
-        if source_label_n.casefold() == source_title_variant.casefold():
+        if comparable_navigation_text(source_label_n) == comparable_navigation_text(source_title_variant):
             return target_book_title_n or None
-        prefix = source_title_variant + ":"
-        if not source_label_n.casefold().startswith(prefix.casefold()):
+        title_match = flexible_navigation_match(source_label_n, source_title_variant, at_start=True)
+        if not title_match:
             continue
-        suffix = normalize_space(source_label_n[len(prefix):])
+        remainder = source_label_n[title_match.end():]
+        if remainder and remainder[0].isalnum():
+            continue
+        suffix = normalize_space(remainder.lstrip(" :—–.-"))
+        if not suffix:
+            return target_book_title_n or None
         if suffix in ui:
             return f"{target_book_title_n} : {ui[suffix]}" if target_book_title_n else ui[suffix]
         mapping = heading_map.get((rel, ""))
         if mapping:
             mapped_source, mapped_target = map(normalize_space, mapping)
-            if mapped_source.casefold().startswith(suffix.casefold()):
+            if flexible_navigation_match(mapped_source, suffix, at_start=True):
                 # Preserve a short source suffix such as "Chapter 1" when the
                 # canonical heading is "Chapter 1: Full title".
                 target_suffix = mapped_target
@@ -1623,7 +1756,10 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             replacement = document_title_replacement(
                 label, rel, heading_map, ui, source_book_title, target_book_title,
             )
-            if replacement:
+            # Preserve multipart headings: set_visible_text() would collapse
+            # their spans and line breaks. Plain headings can be harmonized
+            # safely with the canonical navigation wording.
+            if replacement and len(target) == 0:
                 set_visible_text(target, replacement)
             continue
         href = source.attrib.get("href")
@@ -1631,7 +1767,7 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             continue
         replacement = navigation_label_replacement(visible_text(source), href, rel, heading_map, ui)
         protected_descendant = any(
-            node is not target and (local_name(node.tag) in PROTECTED_TAGS or has_protected_class(node))
+            node is not target and element_is_protected(node)
             for node in target.iter()
         )
         if replacement and not protected_descendant:
@@ -2452,13 +2588,14 @@ def navigation_sync_errors(original: Path, working: Path, rels: list[str],
                 expected = document_title_replacement(
                     visible_text(source), rel, heading_map, ui, source_book_title, target_book_title,
                 )
-                if expected and visible_text(target) != normalize_space(expected):
+                should_replace = len(target) == 0
+                if expected and should_replace and visible_text(target) != normalize_space(expected):
                     errors.append(f"Navigation heading was not localized in {rel}: {visible_text(source)!r}")
                 continue
             if local_name(source.tag) != "a" or not source.attrib.get("href"):
                 continue
             protected_descendant = any(
-                node is not target and (local_name(node.tag) in PROTECTED_TAGS or has_protected_class(node))
+                node is not target and element_is_protected(node)
                 for node in target.iter()
             )
             if protected_descendant:
@@ -2473,6 +2610,9 @@ def navigation_sync_errors(original: Path, working: Path, rels: list[str],
 
 def validate(paths: dict[str, Path]) -> dict:
     project = json.loads((paths["jobs"] / "project.json").read_text(encoding="utf-8"))
+    validate_code_containers = (
+        project.get("protection_schema_version", 0) >= PROTECTION_SCHEMA_VERSION
+    )
     manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
     errors: list[str] = []
     warnings: list[str] = []
@@ -2507,9 +2647,15 @@ def validate(paths: dict[str, Path]) -> dict:
                         continue
                     errors.append(f"Structural attribute {key_name} changed in {rel}")
             if (not project.get("adopted_legacy_project")
-                    and (local_name(source.tag) in PROTECTED_TAGS or has_protected_class(source))
+                    and element_is_protected(
+                        source, include_code_containers=validate_code_containers,
+                    )
                     and protected_payload(source) != protected_payload(target)):
-                errors.append(f"Protected content changed in {rel}")
+                classes = normalize_space(source.attrib.get("class", ""))
+                detail = f"<{local_name(source.tag)}>"
+                if classes:
+                    detail += f" class={classes!r}"
+                errors.append(f"Protected content changed in {rel}: {detail}")
     opf_root = parse_xml(paths["working"] / project["opf"]).getroot()
     language = next((e for e in opf_root.iter() if local_name(e.tag) == "language" and namespace(e.tag) == DC_NS), None)
     if language is None or visible_text(language) != project["target_language_code"]:
@@ -2699,7 +2845,11 @@ def main() -> int:
     )
     parser.add_argument("--glossary", type=Path, help="Custom UTF-8 glossary used for translation batches")
     parser.add_argument("--book-name", help="Short folder name created under books/")
-    parser.add_argument("--keep-source", action="store_true", help="Keep the input EPUB after original.epub is initialized")
+    parser.add_argument(
+        "--keep-source",
+        action="store_true",
+        help="Legacy no-op retained for compatibility; input EPUBs are always kept",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()

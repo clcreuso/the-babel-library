@@ -4,6 +4,11 @@ All notable changes to this project will be documented here.
 
 ## Unreleased
 
+- Protected table- and block-based code listings from translation, versioned the new validation
+  rule for existing projects, preserved multipart heading markup while harmonizing navigation,
+  and improved semantic repair context without exceeding repair batch budgets.
+- Anchored every generated book project under the repository `books/` directory and retained the
+  original input EPUB regardless of its location.
 - Preserved cumulative translation metrics and added a chronological JSONL history for every resume.
 - Classified clear Codex quota and authentication failures as external blockers instead of retrying
   them as malformed translations; matching is anchored to the same CLI diagnostic line and reports

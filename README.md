@@ -50,7 +50,7 @@ git clone https://github.com/clcreuso/codex-epub-translator.git
 cd codex-epub-translator
 ```
 
-Place the EPUB in the repository folder, then send this message in Codex:
+The EPUB may be anywhere on your machine, including outside the repository. Send this message in Codex:
 
 ```text
 [translate_epub.md](translate_epub.md) "My Book.epub" French --profile fast
@@ -58,7 +58,7 @@ Place the EPUB in the repository folder, then send this message in Codex:
 
 This is a Codex prompt, not a shell command. Codex reads the linked workflow, runs the Python pipeline, follows its progress, handles the editorial metadata pass, optionally localizes the cover, and returns the final EPUB.
 
-The project is created next to the input file:
+The project is always created in the repository's `books/` directory:
 
 ```text
 books/Book title/
@@ -71,11 +71,7 @@ books/Book title/
 
 The repository contains an empty `books/` directory through `books/.gitkeep`; every generated book project inside it remains ignored by Git.
 
-By default, the input EPUB outside `books/` is deleted only after `original.epub` has been copied and preparation has completed successfully. Add `--keep-source` to the Codex prompt if you want to retain it:
-
-```text
-[translate_epub.md](translate_epub.md) "My Book.epub" French --profile fast --keep-source
-```
+The input EPUB is never moved or deleted. The pipeline works from the canonical `original.epub` copy stored in the book project.
 
 ## Profiles
 

@@ -44,6 +44,7 @@ class FastEpubPipelineTests(unittest.TestCase):
 <head><title>Tiny Book</title></head><body>
 <h1 id="chapter-one">Object Design</h1>
 <p>A <code>Gear</code> sends messages.</p>
+<table class="processedcode"><tr><td class="codeline">puts "Hello world"</td></tr></table>
 <p><img src="diagram.png" alt="Useful diagram"/></p>
 </body></html>""",
             "OEBPS/nav.xhtml": """<?xml version="1.0" encoding="utf-8"?>
@@ -74,16 +75,20 @@ class FastEpubPipelineTests(unittest.TestCase):
             root = Path(directory)
             epub = self.create_fixture(root)
             source_bytes = epub.read_bytes()
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             self.assertEqual(paths["root"], root.resolve() / "books" / "Tiny Book")
             self.assertEqual(paths["source"].name, "original.epub")
             self.assertEqual(paths["final"].name, "translated-fr.epub")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             self.assertEqual(paths["source"].read_bytes(), source_bytes)
-            self.assertFalse(epub.exists())
+            self.assertTrue(epub.exists())
+            self.assertEqual(project["protection_schema_version"], pipeline.PROTECTION_SCHEMA_VERSION)
+            progress = (paths["jobs"] / "translation_progress.md").read_text(encoding="utf-8")
+            self.assertIn("Protected code containers skipped: 2", progress)
             segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
             self.assertGreaterEqual(len(segments), 5)
             self.assertTrue(any("⟦LOCK:" in row["source"] for row in segments))
+            self.assertFalse(any("Hello world" in row["source"] for row in segments))
 
             translations = []
             for segment in segments:
@@ -157,6 +162,7 @@ class FastEpubPipelineTests(unittest.TestCase):
                 ncx = ET.fromstring(archive.read("toc.ncx"))
                 self.assertIn("Conception objet", "".join(chapter.itertext()))
                 self.assertIn("Gear", "".join(chapter.itertext()))
+                self.assertIn('puts "Hello world"', "".join(chapter.itertext()))
                 self.assertIn("Conception objet", "".join(nav.itertext()))
                 self.assertIn("Couverture", "".join(nav.itertext()))
                 nav_title = next(node for node in nav.iter() if pipeline.local_name(node.tag) == "title")
@@ -194,7 +200,7 @@ class FastEpubPipelineTests(unittest.TestCase):
             epub = self.create_fixture(root)
             glossary = root / "glossary.md"
             glossary.write_text("- code review: revue de code\n", encoding="utf-8")
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(
                 epub, "French", "fr", paths, force=False, resume=False,
                 keep_input=True, glossary_path=glossary,
@@ -214,6 +220,112 @@ class FastEpubPipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.validate_translation_payload(batch, invalid)
 
+    def test_table_based_code_containers_are_not_extracted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chapter.xhtml"
+            path.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<table class="processedcode"><tr><td class="codeline">puts "Hello world"</td></tr></table>
+<div class="source-code"><p>Spanish example text must stay unchanged.</p></div>
+<dl><dd class="processedcode">A definition-list code sample stays unchanged.</dd></dl>
+<p class="barcode">A barcode explanation remains narrative text.</p>
+<p>This narrative sentence should be translated.</p>
+</body></html>""", encoding="utf-8")
+            segments = pipeline.extract_document_segments(
+                path, "chapter.xhtml", "application/xhtml+xml",
+            )
+            self.assertEqual(
+                [row["source"] for row in segments],
+                [
+                    "A barcode explanation remains narrative text.",
+                    "This narrative sentence should be translated.",
+                ],
+            )
+            inline = ET.fromstring('<span class="codeline">reader-visible wording</span>')
+            self.assertFalse(pipeline.has_code_container_class(inline))
+
+    def test_repair_batch_budget_counts_rejected_attempt(self):
+        segments = [
+            {
+                "id": str(index),
+                "source": "Short source.",
+                "_previous_rejected_target": "x" * 400,
+            }
+            for index in range(3)
+        ]
+        batches = pipeline.make_batches(segments, 150)
+        self.assertEqual([len(batch) for batch in batches], [1, 1, 1])
+
+    def test_code_container_validation_is_versioned_for_existing_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
+            project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+            segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
+            pipeline.write_jsonl(
+                paths["jobs"] / "translations.jsonl",
+                [{"id": row["id"], "target": row["source"], "source": "test"} for row in segments],
+            )
+            pipeline.apply(paths)
+
+            chapter_path = paths["working"] / "OEBPS" / "ch01.xhtml"
+            chapter_tree = pipeline.parse_xml(chapter_path)
+            code_cell = next(
+                node for node in chapter_tree.getroot().iter()
+                if "codeline" in node.attrib.get("class", "").split()
+            )
+            code_cell.text = 'puts "Bonjour"'
+            pipeline.write_tree(chapter_tree, chapter_path)
+
+            project.pop("protection_schema_version")
+            pipeline.write_json_atomic(paths["jobs"] / "project.json", project)
+            self.assertEqual(pipeline.validate(paths)["errors"], [])
+
+            project["protection_schema_version"] = pipeline.PROTECTION_SCHEMA_VERSION
+            pipeline.write_json_atomic(paths["jobs"] / "project.json", project)
+            with self.assertRaisesRegex(RuntimeError, "Validation failed"):
+                pipeline.validate(paths)
+            report = json.loads((paths["jobs"] / "validation.json").read_text(encoding="utf-8"))
+            self.assertTrue(any("class='codeline'" in error for error in report["errors"]))
+
+    def test_single_word_headings_are_extracted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chapter.xhtml"
+            path.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2>Logic</h2><p>Rails</p>
+</body></html>""", encoding="utf-8")
+            segments = pipeline.extract_document_segments(
+                path, "chapter.xhtml", "application/xhtml+xml",
+            )
+            self.assertEqual([row["source"] for row in segments], ["Logic"])
+
+    def test_repair_prompt_includes_rejected_target_and_semantic_guidance(self):
+        batch = [{
+            "id": "one", "file": "chapter.xhtml", "kind": "element",
+            "source": (
+                "Modify the file in ⟦OPEN:1⟧db⟦CLOSE:1⟧ named "
+                "⟦OPEN:2⟧seeds.rb⟦CLOSE:2⟧."
+            ),
+            "_previous_rejected_target": (
+                "Modifier le fichier ⟦OPEN:2⟧seeds.rb⟦CLOSE:2⟧ dans "
+                "⟦OPEN:1⟧db⟦CLOSE:1⟧."
+            ),
+        }]
+        project = {
+            "source_language": "English",
+            "target_language": "French",
+            "target_language_code": "fr",
+        }
+        prompt = pipeline.build_prompt(
+            "Translate.", "Preserve code.", project, batch,
+            {"one": "placeholder sequence changed"},
+        )
+        self.assertIn("previous_rejected_target", prompt)
+        self.assertIn("relation sémantique", prompt)
+        self.assertIn("sans échanger leurs rôles", prompt)
+
     def test_valid_rows_are_salvaged_from_a_partially_invalid_batch(self):
         batch = [
             {"id": "good", "source": "A plain sentence.", "placeholders": []},
@@ -232,13 +344,18 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             calls = []
 
             def fake_run(_paths, _project, _template, _glossary, batch_id, batch,
                          _reasoning_effort, attempt, repair_reasons, _timeout):
-                calls.append((attempt, [row["id"] for row in batch], repair_reasons))
+                calls.append((
+                    attempt,
+                    [row["id"] for row in batch],
+                    repair_reasons,
+                    [row.get("_previous_rejected_target") for row in batch],
+                ))
                 invalid_id = batch[-1]["id"] if attempt == 0 else None
                 translations = {
                     row["id"]: row["source"]
@@ -250,6 +367,9 @@ class FastEpubPipelineTests(unittest.TestCase):
                     "batch_id": batch_id, "attempt": attempt, "segments": len(batch),
                     "exit_code": 0, "seconds": 0.1, "error": None, "response_errors": [],
                     "translations": translations, "invalid": invalid,
+                    "invalid_targets": (
+                        {invalid_id: "Traduction précédente rejetée."} if invalid_id else {}
+                    ),
                 }
 
             with patch.object(pipeline, "run_one_batch", side_effect=fake_run):
@@ -263,6 +383,7 @@ class FastEpubPipelineTests(unittest.TestCase):
             self.assertEqual(calls[1][0], 1)
             self.assertEqual(len(calls[1][1]), 1)
             self.assertEqual(calls[1][2][calls[1][1][0]], "placeholder sequence changed")
+            self.assertEqual(calls[1][3], ["Traduction précédente rejetée."])
             self.assertEqual(stats["workers"], 10)
             self.assertEqual(stats["first_pass_invalid"], 1)
             self.assertEqual(stats["repair_segments_submitted"], 1)
@@ -273,7 +394,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
 
             def fake_run(_paths, _project, _template, _glossary, batch_id, batch,
@@ -350,7 +471,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             calls = []
 
@@ -383,7 +504,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
 
             def blocked(_paths, _project, _template, _glossary, batch_id, batch,
@@ -426,7 +547,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
             representative = next(
@@ -451,7 +572,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
             representative = next(row for row in segments if row["kind"] == "element")
@@ -590,7 +711,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             decision = {
                 "title": "Petit livre",
@@ -626,7 +747,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
 
             def fake_process(*_args, **kwargs):
@@ -648,7 +769,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             invalid_path = root / "broken-decision.json"
             invalid_path.write_text("{not-json", encoding="utf-8")
@@ -670,7 +791,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             editorial_dir = paths["jobs"] / "editorial"
             editorial_dir.mkdir(parents=True, exist_ok=True)
@@ -708,6 +829,69 @@ class FastEpubPipelineTests(unittest.TestCase):
             self.assertIn(doctype, rewritten)
             self.assertIn("<?xml-stylesheet", rewritten)
 
+    def test_navigation_tolerates_spacing_noise_and_preserves_heading_structure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.xhtml"
+            target = root / "target.xhtml"
+            source.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+<title>Part 1 Getting Started</title></head><body>
+<h1><span>Part 1</span><br/><span>Getting Started</span></h1>
+<h2>Summary</h2>
+</body></html>""", encoding="utf-8")
+            target.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+<title>Partie 1 : prise en main</title></head><body>
+<h1><span>Partie 1</span><br/><span>Prise en main</span></h1>
+<h2>Synthèse</h2>
+</body></html>""", encoding="utf-8")
+            heading_map = {
+                ("chapter.xhtml", ""): (
+                    "Part 1 Getting Started",
+                    "Partie 1 : prise en main",
+                ),
+            }
+            pipeline.sync_xhtml_links(
+                source, target, "chapter.xhtml", heading_map,
+                {"__code__": "fr", "Summary": "Résumé"},
+            )
+            target_root = pipeline.parse_xml(target).getroot()
+            target_heading = next(
+                node for node in target_root.iter() if pipeline.local_name(node.tag) == "h1"
+            )
+            spans = [
+                node for node in target_heading
+                if pipeline.local_name(node.tag) == "span"
+            ]
+            self.assertEqual([span.text for span in spans], ["Partie 1", "Prise en main"])
+            plain_heading = next(
+                node for node in target_root.iter() if pipeline.local_name(node.tag) == "h2"
+            )
+            self.assertEqual(pipeline.visible_text(plain_heading), "Résumé")
+
+            source_ncx = root / "source.ncx"
+            target_ncx = root / "target.ncx"
+            ncx = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<docTitle><text>Book</text></docTitle><navMap>
+<navPoint id="n1"><navLabel><text>1. Pa rt 1: Getting Started</text></navLabel>
+<content src="chapter.xhtml"/></navPoint>
+</navMap></ncx>"""
+            source_ncx.write_text(ncx, encoding="utf-8")
+            target_ncx.write_text(ncx, encoding="utf-8")
+            pipeline.sync_ncx(
+                source_ncx, target_ncx, "toc.ncx", heading_map,
+                "Livre", "fr", {"__code__": "fr"},
+            )
+            ncx_root = pipeline.parse_xml(target_ncx).getroot()
+            labels = [
+                pipeline.visible_text(node)
+                for node in ncx_root.iter()
+                if pipeline.local_name(node.tag) == "navLabel"
+            ]
+            self.assertEqual(labels, ["1. Partie 1 : prise en main"])
+
     def test_malformed_translatable_xml_is_not_silently_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "broken.xhtml"
@@ -723,16 +907,68 @@ class FastEpubPipelineTests(unittest.TestCase):
             source = root / "books" / "Source project" / "original.epub"
             source.parent.mkdir(parents=True)
             shutil.move(fixture, source)
-            paths = pipeline.project_paths(source, "fr", "Different project")
+            paths = pipeline.project_paths(source, "fr", "Different project", books_root=root / "books")
             pipeline.prepare(source, "French", "fr", paths, force=False, resume=False)
             self.assertTrue(source.exists())
             self.assertTrue(paths["source"].exists())
+
+    def test_loose_epub_inside_books_does_not_create_nested_books_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            books_root = root / "books"
+            books_root.mkdir()
+            source = self.create_fixture(root)
+            loose_epub = books_root / source.name
+            shutil.move(source, loose_epub)
+
+            paths = pipeline.project_paths(loose_epub, "fr", books_root=books_root)
+            pipeline.prepare(loose_epub, "French", "fr", paths, force=False, resume=False)
+
+            self.assertEqual(paths["root"], books_root.resolve() / "Tiny Book")
+            self.assertFalse((books_root / "books").exists())
+            self.assertTrue(loose_epub.exists())
+            self.assertTrue(paths["source"].exists())
+
+    def test_external_epub_is_copied_to_repository_books_and_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            external_root = root / "external"
+            external_root.mkdir()
+            source = self.create_fixture(external_root)
+            books_root = root / "repository" / "books"
+
+            paths = pipeline.project_paths(source, "fr", books_root=books_root)
+            pipeline.prepare(source, "French", "fr", paths, force=False, resume=False)
+
+            self.assertEqual(paths["root"], books_root.resolve() / "Tiny Book")
+            self.assertTrue(source.exists())
+            self.assertTrue(paths["source"].exists())
+
+    def test_default_project_root_is_the_repository_books_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.create_fixture(Path(directory))
+
+            paths = pipeline.project_paths(source, "fr")
+
+            self.assertEqual(paths["root"].parent, pipeline.PROJECT_BOOKS_ROOT.resolve())
+
+    def test_existing_canonical_project_path_is_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.create_fixture(root)
+            books_root = root / "books"
+            paths = pipeline.project_paths(source, "fr", books_root=books_root)
+            pipeline.prepare(source, "French", "fr", paths, force=False, resume=False)
+
+            resumed_paths = pipeline.project_paths(paths["source"], "fr", books_root=books_root)
+
+            self.assertEqual(resumed_paths["root"], paths["root"])
 
     def test_resume_does_not_delete_input_before_project_is_read(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             retry_input = root / "retry.epub"
             shutil.copy2(paths["source"], retry_input)
@@ -769,7 +1005,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             batch = [pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")[0]]
             template = "Translate."
@@ -785,7 +1021,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             batch = [pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")[0]]
 
@@ -815,7 +1051,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             batch = [pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")[0]]
 
@@ -834,7 +1070,7 @@ class FastEpubPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             epub = self.create_fixture(root)
-            paths = pipeline.project_paths(epub, "fr")
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
             project = pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
             segments = pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")
             legacy = {

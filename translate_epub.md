@@ -2,7 +2,7 @@
 
 ## Utilisation recommandée
 
-Placer l’EPUB dans le même dossier que ce workflow, puis envoyer ce message dans Codex :
+L’EPUB peut se trouver n’importe où sur la machine. Envoyer ensuite ce message dans Codex :
 
 ```text
 [translate_epub.md](translate_epub.md) "Mon livre.epub" French --profile fast
@@ -27,7 +27,7 @@ Le titre court du dossier est lu dans les métadonnées de l’EPUB. Il peut êt
 [translate_epub.md](translate_epub.md) "Mon livre.epub" French --profile fast --book-name "Titre court"
 ```
 
-Une copie canonique nommée `original.epub` est rangée dans le dossier du livre et n’est jamais remplacée. Une fois la préparation entièrement réussie, le fichier d’entrée resté hors de `books/` est supprimé. Ajouter `--keep-source` au message Codex pour le conserver exceptionnellement.
+L’EPUB d’entrée peut se trouver n’importe où, y compris hors du dépôt ou directement dans `books/`. Le projet est toujours créé dans le dossier `books/` de ce dépôt, sans jamais produire un dossier `books/books/`. Une copie canonique nommée `original.epub` est rangée dans le dossier du livre et n’est jamais remplacée. Le fichier d’entrée original n’est jamais déplacé ni supprimé.
 
 Les guillemets extérieurs, caractères invisibles et parenthèses finales vides sont retirés du nom de dossier. Le titre final affiché par les liseuses est ensuite décidé par la passe éditoriale, indépendamment de ce nom technique.
 
@@ -172,7 +172,7 @@ Les anciens dossiers de travail sont archivés avec un horodatage avant la nouve
 - `--editorial-decision` importe une décision éditoriale JSON validée par le même schéma, utile
   lorsqu’un humain ou l’agent superviseur doit reprendre la main sans figer cette décision dans le code ;
 - `--glossary` utilise un glossaire Markdown UTF-8 propre au livre ou au domaine ;
-- `--keep-source` conserve le fichier EPUB d’entrée hors de `books/` après la préparation ;
+- `--keep-source` reste accepté pour compatibilité, mais n’a plus d’effet : le fichier EPUB d’entrée est toujours conservé ;
 - `--max-retries` relance uniquement les segments invalides sous forme de micro-lots.
 - `--worker-timeout` limite chaque lot Codex à 1 800 secondes par défaut ; un dépassement est traité comme un lot à réparer ;
 - `--editorial-timeout` limite la relecture éditoriale à 600 secondes par défaut.
