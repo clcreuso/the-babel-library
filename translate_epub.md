@@ -87,7 +87,12 @@ python3 epub_translate.py "livre.epub" French --stage editorial
 
 La décision est enregistrée dans `translation jobs fr/editorial/metadata_decision.json`. Le prompt prêt à employer pour l’édition visuelle est enregistré dans `translation jobs fr/editorial/cover_prompt.md`.
 
-Dans Codex, ouvrir la couverture source, effectuer une traduction visuelle rapide en une seule passe avec ce prompt, puis installer directement l’image sans recalculer la décision :
+Dans Codex, ouvrir la couverture source, effectuer une traduction visuelle avec ce prompt, puis
+comparer l’image obtenue côte à côte avec la source avant de l’installer. Le titre, le sous-titre,
+l’auteur et le contributeur explicitement fournis peuvent changer ; toute autre zone textuelle
+(citation, prix, série, ancien titre, marque éditoriale) doit rester présente, mot pour mot, au même
+endroit et avec le même rôle visuel. Refaire une seule passe ciblée si une zone disparaît, devient
+bilingue ou change sans instruction. Installer ensuite l’image sans recalculer la décision :
 
 ```sh
 python3 epub_translate.py "livre.epub" French \
@@ -253,4 +258,8 @@ EPUB 3, la propriété `cover-image` est ajoutée si nécessaire. Le prompt de c
 dimensions source. Une différence de dimensions ou de ratio est signalée pour relecture, mais ne
 bloque pas automatiquement une décision visuelle pertinente.
 
-La navigation EPUB, le NCX et les références de titres sont générés à partir des titres traduits validés plutôt que retraduits séparément. Cette table canonique évite les variations terminologiques entre chapitres et table des matières.
+La navigation EPUB, le NCX et les références de titres sont générés à partir des titres traduits
+validés plutôt que retraduits séparément. Le synchroniseur sait recomposer les libellés formés de
+plusieurs titres successifs et d’un titre de livre en préfixe ou suffixe. Les titres XHTML qui ne
+peuvent pas être déduits de cette structure restent des segments confiés à l’IA. Cette séparation
+évite les variations terminologiques sans introduire de règle propre à un livre.

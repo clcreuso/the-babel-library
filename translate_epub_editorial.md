@@ -19,7 +19,9 @@ Produire des métadonnées propres, exactes, naturelles dans la langue cible et 
 - N’invente ni identifiant, ni ISBN, ni date, ni contributeur.
 - `description` doit être une brève présentation éditoriale fidèle dans la langue cible, sans balisage HTML.
 - `subjects` doit contenir de 3 à 7 expressions précises dans la langue cible et utiles pour le classement.
-- Les champs `cover_text` contiennent exactement le texte à imprimer sur la couverture localisée.
+- Les champs `cover_text` contiennent exactement les champs d’identité du livre à remplacer sur la
+  couverture localisée. Ils n’autorisent pas à supprimer, traduire ou reformuler les autres zones
+  visibles de la couverture ; celles-ci doivent être préservées mot pour mot par l’édition visuelle.
 - `front_matter_replacements` doit lister les libellés source exacts de la page de titre ou des premiers textes liminaires qui doivent être harmonisés, avec leur remplacement exact dans la langue cible. N’inclus que des correspondances certaines et visibles dans le contexte fourni.
 - `notes` explique brièvement les corrections ou arbitrages importants, sans bavardage.
 

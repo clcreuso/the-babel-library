@@ -161,7 +161,16 @@ saved as project memory, and applied by the same deterministic stage.
 The cover step is intentionally constrained to the image selected from the OPF manifest. Other
 images remain preserved. The replacement must use the same declared image format. The generated
 cover prompt includes the source pixel geometry; differing dimensions or aspect ratio produce
-review warnings rather than silently distorting or rejecting otherwise useful artwork.
+review warnings rather than silently distorting or rejecting otherwise useful artwork. Before
+installation, compare the edited cover with the source: only the explicitly supplied book-identity
+fields may change, while every unlisted endorsement, award, series line, prior-book title, and
+publisher mark must remain verbatim and in the same visual role.
+
+Reader-facing XHTML document titles are translated with the rest of the content. Deterministic
+navigation synchronization then uses validated chapter headings and editorial book metadata as its
+canonical source, including common labels assembled from several consecutive headings or a book
+title placed before or after the chapter label. Unrecognized wording remains model-authored rather
+than being guessed by language-specific code.
 
 ## Style compatibility review
 

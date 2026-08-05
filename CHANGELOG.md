@@ -4,6 +4,12 @@ All notable changes to this project will be documented here.
 
 ## Unreleased
 
+- Translated reader-facing XHTML document titles and generalized navigation synchronization for
+  labels composed from multiple headings or a book title in prefix/suffix position; unresolved
+  wording remains model-authored and the same resolver now backs validation.
+- Tightened localized-cover prompts and workflow review so unlisted endorsements, series lines,
+  prior-book titles, and publisher copy must remain verbatim instead of being silently removed or
+  partially translated.
 - Added a bounded Codex style-compatibility stage between editorial review and validation. It
   analyzes CSS against XHTML template usage, permits only enumerated low-risk transformations,
   records approved resource hashes, and rejects later unapproved style changes. Root text/background

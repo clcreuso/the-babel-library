@@ -110,6 +110,7 @@ img.figure {
             self.assertGreaterEqual(len(segments), 5)
             self.assertTrue(any("⟦LOCK:" in row["source"] for row in segments))
             self.assertFalse(any("Hello world" in row["source"] for row in segments))
+            self.assertTrue(any(row["tag"] == "title" for row in segments))
 
             translations = []
             for segment in segments:
@@ -152,6 +153,9 @@ img.figure {
             paths["final"].write_bytes(b"stale-final")
             editorial = pipeline.editorial(paths, "medium", resume=True, cover_image=localized_cover)
             self.assertEqual(editorial["cover_status"], "localized")
+            cover_prompt = (editorial_dir / "cover_prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Every visible text region not explicitly listed", cover_prompt)
+            self.assertIn("unlisted endorsements", cover_prompt)
             self.assertFalse((paths["jobs"] / "validation.json").exists())
             self.assertFalse(paths["final"].exists())
             opf_path = paths["working"] / "content.opf"
@@ -182,6 +186,10 @@ img.figure {
                 nav = ET.fromstring(archive.read("OEBPS/nav.xhtml"))
                 ncx = ET.fromstring(archive.read("toc.ncx"))
                 self.assertIn("Conception objet", "".join(chapter.itertext()))
+                chapter_title = next(
+                    node for node in chapter.iter() if pipeline.local_name(node.tag) == "title"
+                )
+                self.assertEqual(chapter_title.text, "Petit livre : conception objet")
                 self.assertIn("Gear", "".join(chapter.itertext()))
                 self.assertIn('puts "Hello world"', "".join(chapter.itertext()))
                 self.assertIn("Conception objet", "".join(nav.itertext()))
@@ -1120,6 +1128,129 @@ img.figure {
                 if pipeline.local_name(node.tag) == "navLabel"
             ]
             self.assertEqual(labels, ["1. Partie 1 : prise en main"])
+
+    def test_navigation_composes_split_headings_and_book_title_suffixes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original"
+            working = root / "working"
+            original.mkdir()
+            working.mkdir()
+            chapter_rel = "chapter.xhtml"
+            source_chapter = original / chapter_rel
+            target_chapter = working / chapter_rel
+            source_chapter.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head>
+<title>Part One: Getting Started, Adaptable Book</title></head><body>
+<h1 id="part-one">Part One</h1><h1 id="getting-started">Getting Started</h1>
+</body></html>""", encoding="utf-8")
+            target_chapter.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="fr"><head>
+<title>Traduction libre produite par le worker</title></head><body>
+<h1 id="part-one">Première partie</h1><h1 id="getting-started">Bien démarrer</h1>
+</body></html>""", encoding="utf-8")
+            heading_map = pipeline.id_heading_map(original, working, [chapter_rel])
+            self.assertEqual(
+                pipeline.navigation_label_replacement(
+                    "Part One • Getting Started", "chapter.xhtml", "nav.xhtml",
+                    heading_map, {"__code__": "fr"},
+                ),
+                "Première partie • Bien démarrer",
+            )
+            self.assertIsNone(
+                pipeline.navigation_label_replacement(
+                    "Part One • A publisher-specific bonus", "chapter.xhtml", "nav.xhtml",
+                    heading_map, {"__code__": "fr"},
+                )
+            )
+            self.assertIsNone(
+                pipeline.document_title_replacement(
+                    "Publisher Special Edition, Adaptable Book", chapter_rel, heading_map,
+                    {"__code__": "fr"}, "Adaptable Book", "Livre adaptable",
+                )
+            )
+
+            pipeline.sync_xhtml_links(
+                source_chapter, target_chapter, chapter_rel, heading_map,
+                {"__code__": "fr"}, "Adaptable Book", "Livre adaptable",
+            )
+            chapter_root = pipeline.parse_xml(target_chapter).getroot()
+            chapter_title = next(
+                node for node in chapter_root.iter() if pipeline.local_name(node.tag) == "title"
+            )
+            self.assertEqual(
+                pipeline.visible_text(chapter_title),
+                "Première partie: Bien démarrer, Livre adaptable",
+            )
+
+            source_nav = original / "nav.xhtml"
+            target_nav = working / "nav.xhtml"
+            nav = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+<title>Contents, Adaptable Book</title></head><body><nav><ol><li>
+<a href="chapter.xhtml"><span>Part One</span> • <span>Getting Started</span></a>
+</li></ol></nav></body></html>"""
+            source_nav.write_text(nav, encoding="utf-8")
+            target_nav.write_text(nav, encoding="utf-8")
+            ui = {"__code__": "fr", "Contents": "Sommaire"}
+            pipeline.sync_xhtml_links(
+                source_nav, target_nav, "nav.xhtml", heading_map, ui,
+                "Adaptable Book", "Livre adaptable",
+            )
+            nav_root = pipeline.parse_xml(target_nav).getroot()
+            nav_title = next(
+                node for node in nav_root.iter() if pipeline.local_name(node.tag) == "title"
+            )
+            link = next(node for node in nav_root.iter() if pipeline.local_name(node.tag) == "a")
+            self.assertEqual(pipeline.visible_text(nav_title), "Sommaire, Livre adaptable")
+            self.assertEqual(
+                pipeline.visible_text(link), "Première partie • Bien démarrer",
+            )
+            self.assertEqual(len(list(link)), 2)
+            self.assertEqual(
+                pipeline.navigation_sync_errors(
+                    original, working, ["nav.xhtml"], heading_map, ui,
+                    "Adaptable Book", "Livre adaptable",
+                ),
+                [],
+            )
+
+            source_ncx = original / "toc.ncx"
+            target_ncx = working / "toc.ncx"
+            ncx = """<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<docTitle><text>Adaptable Book</text></docTitle><navMap>
+<navPoint id="n1"><navLabel><text>Part One: Getting Started</text></navLabel>
+<content src="chapter.xhtml"/></navPoint></navMap>
+<pageList><navLabel><text>Page mapping for Adaptable Book</text></navLabel></pageList>
+</ncx>"""
+            source_ncx.write_text(ncx, encoding="utf-8")
+            target_ncx.write_text(ncx, encoding="utf-8")
+            ncx_ui = {**ui, "Page mapping for": "Correspondance des pages pour"}
+            pipeline.sync_ncx(
+                source_ncx, target_ncx, "toc.ncx", heading_map,
+                "Livre adaptable", "fr", ncx_ui,
+            )
+            ncx_root = pipeline.parse_xml(target_ncx).getroot()
+            ncx_text = [
+                pipeline.visible_text(node) for node in ncx_root.iter()
+                if pipeline.local_name(node.tag) == "text"
+            ]
+            self.assertEqual(
+                ncx_text,
+                [
+                    "Livre adaptable",
+                    "Première partie: Bien démarrer",
+                    "Correspondance des pages pour Livre adaptable",
+                ],
+            )
+            self.assertEqual(
+                pipeline.navigation_sync_errors(
+                    original, working, ["toc.ncx"], heading_map, ncx_ui,
+                    "Adaptable Book", "Livre adaptable",
+                ),
+                [],
+            )
 
     def test_malformed_translatable_xml_is_not_silently_ignored(self):
         with tempfile.TemporaryDirectory() as directory:

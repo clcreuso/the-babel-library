@@ -93,6 +93,8 @@ UI_TRANSLATIONS = {
         "Contents": "Sommaire", "Table of Contents": "Table des matières", "Index": "Index",
         "Introduction": "Introduction", "Preface": "Préface", "Acknowledgments": "Remerciements",
         "Afterword": "Postface", "About the Author": "À propos de l’auteur", "Cover": "Couverture",
+        "Dedication": "Dédicace", "Continued": "Suite", "Start": "Début",
+        "Page mapping for": "Correspondance des pages pour",
         "Title Page": "Page de titre", "Copyright": "Droits d’auteur",
         "Copyright Page": "Page de copyright", "Body Matter": "Corps du livre",
         "Landmarks": "Repères", "Code Snippets": "Extraits de code", "Summary": "Résumé",
@@ -497,7 +499,11 @@ def extract_document_segments(
         if count:
             code_container_counts[rel] = count
     paths, parents = element_paths(root)
-    candidates = {"text", "tspan"} if media_type == "image/svg+xml" else BLOCK_TAGS
+    # XHTML ``title`` elements are reader-facing metadata. Let the translation
+    # model handle titles that cannot be derived from a chapter heading (for
+    # example footnote continuations), then harmonize the deterministic cases
+    # from the canonical heading and book-title mappings during apply/editorial.
+    candidates = {"text", "tspan"} if media_type == "image/svg+xml" else BLOCK_TAGS | {"title"}
     segments: list[dict] = []
     for element in root.iter():
         tag = local_name(element.tag)
@@ -1050,6 +1056,12 @@ def classify_codex_failure(log_text: str) -> dict[str, object]:
     return {"kind": "worker_error", "retryable": True, "detail": ""}
 
 
+def codex_model_args() -> list[str]:
+    """Allow an invocation to select a lower-latency Codex model without changing defaults."""
+    model = os.environ.get("EPUB_CODEX_MODEL", "").strip()
+    return ["--model", model] if model else []
+
+
 def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary: str, batch_id: str,
                   batch: list[dict], reasoning_effort: str, attempt: int,
                   repair_reasons: dict[str, str] | None = None,
@@ -1061,7 +1073,7 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
     prompt = build_prompt(template, glossary, project, batch, repair_reasons)
     prompt_path.write_text(prompt, encoding="utf-8")
     command = [
-        "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
+        "codex", "exec", *codex_model_args(), "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
         "--ignore-rules", "--color", "never", "-C", str(paths["root"]),
         "--output-schema", str(paths["jobs"] / "translation_output.schema.json"),
         "-c", f'model_reasoning_effort="{reasoning_effort}"',
@@ -1681,6 +1693,66 @@ def translated_label(source_label: str, source_title: str, target_title: str) ->
     return None
 
 
+def document_heading_pairs(
+    heading_map: dict[tuple[str, str], tuple[str, str]], rel: str,
+) -> list[tuple[str, str]]:
+    """Return unique source/target headings for one document in reading order."""
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for (mapped_rel, _fragment), pair in heading_map.items():
+        cleaned = tuple(map(normalize_space, pair))
+        if mapped_rel != rel or not all(cleaned) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        pairs.append(cleaned)
+    return pairs
+
+
+def translated_composite_label(
+    source_label: str, pairs: list[tuple[str, str]], *, minimum_matches: int = 2,
+) -> str | None:
+    """Translate a label assembled from several known canonical text parts.
+
+    EPUB navigation commonly joins separate headings (such as a chapter number
+    and subtitle) or appends the book title. Only labels fully explained by the
+    supplied pairs are rebuilt; unknown words make the operation a no-op so the
+    model-produced text remains authoritative.
+    """
+    source_label_n = normalize_space(source_label)
+    unique_pairs: list[tuple[str, str]] = []
+    seen_sources: set[str] = set()
+    for source, target in sorted(
+        ((normalize_space(source), normalize_space(target)) for source, target in pairs),
+        key=lambda pair: len(comparable_navigation_text(pair[0])),
+        reverse=True,
+    ):
+        comparable = comparable_navigation_text(source)
+        if not comparable or not target or comparable in seen_sources:
+            continue
+        seen_sources.add(comparable)
+        unique_pairs.append((source, target))
+
+    matches: list[tuple[int, int, str]] = []
+    for source, target in unique_pairs:
+        match = flexible_navigation_match(source_label_n, source)
+        if match is None or any(match.start() < end and match.end() > start for start, end, _ in matches):
+            continue
+        matches.append((match.start(), match.end(), target))
+    if len(matches) < minimum_matches:
+        return None
+
+    unmatched = list(source_label_n)
+    for start, end, _target in matches:
+        unmatched[start:end] = " " * (end - start)
+    if WORD_RE.search("".join(unmatched)):
+        return None
+
+    result = source_label_n
+    for start, end, target in sorted(matches, reverse=True):
+        result = result[:start] + target + result[end:]
+    return normalize_space(result)
+
+
 def navigation_label_replacement(source_label: str, href: str, rel: str,
                                  heading_map: dict[tuple[str, str], tuple[str, str]],
                                  ui: dict[str, str]) -> str | None:
@@ -1693,9 +1765,19 @@ def navigation_label_replacement(source_label: str, href: str, rel: str,
         return ui[source_label_n]
     target_rel = (Path(rel).parent / unquote(parts.path)).as_posix() if parts.path else rel
     mapping = heading_map.get((target_rel, unquote(parts.fragment)))
-    if not mapping:
-        return None
-    return translated_label(source_label_n, mapping[0], mapping[1])
+    if mapping:
+        replacement = translated_label(source_label_n, mapping[0], mapping[1])
+        if replacement:
+            return replacement
+    heading_pairs = document_heading_pairs(heading_map, target_rel)
+    replacement = translated_composite_label(source_label_n, heading_pairs)
+    if replacement:
+        return replacement
+    for source_title, target_title in heading_pairs:
+        replacement = translated_label(source_label_n, source_title, target_title)
+        if replacement:
+            return replacement
+    return None
 
 
 def document_title_replacement(source_label: str, rel: str,
@@ -1708,8 +1790,16 @@ def document_title_replacement(source_label: str, rel: str,
         return ui[source_label_n]
     source_book_title_n = normalize_space(source_book_title)
     target_book_title_n = normalize_space(target_book_title)
+    book_title_changed = (
+        bool(source_book_title_n and target_book_title_n)
+        and comparable_navigation_text(source_book_title_n)
+        != comparable_navigation_text(target_book_title_n)
+    )
     source_title_variants = []
-    for candidate in (source_book_title_n, source_book_title_n.rstrip(".!?…")):
+    for candidate in (
+        source_book_title_n if book_title_changed else "",
+        source_book_title_n.rstrip(".!?…") if book_title_changed else "",
+    ):
         if candidate and candidate not in source_title_variants:
             source_title_variants.append(candidate)
     for source_title_variant in source_title_variants:
@@ -1736,9 +1826,20 @@ def document_title_replacement(source_label: str, rel: str,
                 if len(suffix) < len(mapped_source) and ":" in mapped_source and ":" in mapped_target:
                     target_suffix = mapped_target.split(":", 1)[0].strip()
                 return f"{target_book_title_n} : {target_suffix}" if target_book_title_n else target_suffix
-    mapping = heading_map.get((rel, ""))
-    if mapping:
-        return translated_label(source_label_n, mapping[0], mapping[1])
+    composite_pairs = document_heading_pairs(heading_map, rel)
+    composite_pairs.extend(
+        (source, target) for source, target in ui.items()
+        if source != "__code__" and source and target
+    )
+    if book_title_changed:
+        composite_pairs.append((source_book_title_n, target_book_title_n))
+    replacement = translated_composite_label(source_label_n, composite_pairs)
+    if replacement:
+        return replacement
+    for mapped_source, mapped_target in document_heading_pairs(heading_map, rel):
+        replacement = translated_label(source_label_n, mapped_source, mapped_target)
+        if replacement:
+            return replacement
     return None
 
 
@@ -1785,6 +1886,15 @@ def sync_ncx(source_path: Path, target_path: Path, rel: str,
              heading_map: dict[tuple[str, str], tuple[str, str]], title: str,
              target_code: str, ui: dict[str, str]) -> None:
     source_tree, target_tree = parse_xml(source_path), parse_xml(target_path)
+    source_doc_title = next(
+        (e for e in source_tree.getroot().iter() if local_name(e.tag) == "docTitle"), None,
+    )
+    source_book_title = ""
+    if source_doc_title is not None:
+        source_title_text = next(
+            (e for e in source_doc_title.iter() if local_name(e.tag) == "text"), None,
+        )
+        source_book_title = visible_text(source_title_text) if source_title_text is not None else ""
     source_points = [e for e in source_tree.getroot().iter() if local_name(e.tag) == "navPoint"]
     target_points = [e for e in target_tree.getroot().iter() if local_name(e.tag) == "navPoint"]
     for source_point, target_point in zip(source_points, target_points):
@@ -1795,6 +1905,14 @@ def sync_ncx(source_path: Path, target_path: Path, rel: str,
             continue
         replacement = navigation_label_replacement(
             visible_text(source_text), source_content.attrib.get("src", ""), rel, heading_map, ui,
+        )
+        if replacement:
+            target_text.text = replacement
+    source_text_nodes = [e for e in source_tree.getroot().iter() if local_name(e.tag) == "text"]
+    target_text_nodes = [e for e in target_tree.getroot().iter() if local_name(e.tag) == "text"]
+    for source_text, target_text in zip(source_text_nodes, target_text_nodes):
+        replacement = document_title_replacement(
+            visible_text(source_text), rel, heading_map, ui, source_book_title, title,
         )
         if replacement:
             target_text.text = replacement
@@ -2567,7 +2685,7 @@ def run_style_review(
     log_path = style_dir / "style.log"
     prompt_path.write_text(prompt, encoding="utf-8")
     command = [
-        "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
+        "codex", "exec", *codex_model_args(), "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
         "--ignore-rules", "--color", "never", "-C", str(paths["root"]),
         "--output-schema", str(schema_path), "-c", f'model_reasoning_effort="{reasoning_effort}"',
         "-o", str(decision_path), "-",
@@ -3035,7 +3153,7 @@ def run_editorial_review(paths: dict[str, Path], project: dict, reasoning_effort
     log_path = editorial_dir / "editorial.log"
     prompt_path.write_text(prompt, encoding="utf-8")
     command = [
-        "codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
+        "codex", "exec", *codex_model_args(), "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
         "--ignore-rules", "--color", "never", "-C", str(paths["root"]),
         "--output-schema", str(schema_path), "-c", f'model_reasoning_effort="{reasoning_effort}"',
         "-o", str(decision_path), "-",
@@ -3203,6 +3321,11 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
     ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
     ui["__code__"] = project["target_language_code"]
     source_title = translated_book_title(paths["original"] / project["opf"])
+    for rel in content_rels:
+        sync_xhtml_links(
+            paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
+            source_title, decision["full_title"],
+        )
     for rel in serial:
         if rel == project["opf"] or not (paths["working"] / rel).exists():
             continue
@@ -3312,7 +3435,7 @@ def editorial(paths: dict[str, Path], reasoning_effort: str, resume: bool, cover
     cover_prompt = (
         "Use case: text-localization\n"
         f"Asset type: {project['target_language']} EPUB front cover\n"
-        f"Primary request: Localize only the reader-visible wording on the existing front cover from "
+        f"Primary request: Localize only the explicitly supplied book-identity fields on the existing front cover from "
         f"{project['source_language']} into {project['target_language']}. Preserve the original artwork, composition, "
         "typographic hierarchy, publisher marks, author identity, colors, crop, aspect ratio, and print-design character.\n"
         "Input image: edit target, the original EPUB cover.\n"
@@ -3320,8 +3443,12 @@ def editorial(paths: dict[str, Path], reasoning_effort: str, resume: bool, cover
         f"author \"{decision['cover_text']['author']}\"; contributor \"{decision['cover_text']['contributor']}\".\n"
         f"{geometry_guidance}"
         f"Constraints: spell every supplied string exactly in {project['target_language']}; omit empty strings; "
-        "add no other wording or watermark; retain all publisher and brand marks unchanged; keep safe margins.\n"
-        "Avoid: changing any non-text image content, logo, palette, crop, or adding decorative elements.\n"
+        "add no other wording or watermark; retain all publisher and brand marks unchanged; keep safe margins. "
+        "Every visible text region not explicitly listed above must remain verbatim, in the same position, and with "
+        "the same visual role. If a listed replacement cannot fit without deleting, rewriting, or moving unlisted "
+        "wording, preserve the unlisted wording and adjust only the supplied field.\n"
+        "Avoid: deleting or translating unlisted endorsements, awards, series text, prior-book titles, publisher copy, "
+        "or changing any non-text image content, logo, palette, crop, or adding decorative elements.\n"
     )
     editorial_dir = paths["jobs"] / "editorial"
     (editorial_dir / "cover_prompt.md").write_text(cover_prompt, encoding="utf-8")
@@ -3442,17 +3569,44 @@ def navigation_sync_errors(original: Path, working: Path, rels: list[str],
         if rel.endswith(".ncx") or namespace(source_root.tag) == NCX_NS:
             source_points = [node for node in source_nodes if local_name(node.tag) == "navPoint"]
             target_points = [node for node in target_nodes if local_name(node.tag) == "navPoint"]
+            handled_source_texts: set[int] = set()
             for source_point, target_point in zip(source_points, target_points):
                 source_content = next((node for node in source_point.iter() if local_name(node.tag) == "content"), None)
                 source_text = next((node for node in source_point.iter() if local_name(node.tag) == "text"), None)
                 target_text = next((node for node in target_point.iter() if local_name(node.tag) == "text"), None)
                 if source_content is None or source_text is None or target_text is None:
                     continue
+                handled_source_texts.add(id(source_text))
                 expected = navigation_label_replacement(
                     visible_text(source_text), source_content.attrib.get("src", ""), rel, heading_map, ui,
                 )
                 if expected and visible_text(target_text) != normalize_space(expected):
                     errors.append(f"Navigation label was not localized in {rel}: {visible_text(source_text)!r}")
+            source_doc_title = next(
+                (node for node in source_nodes if local_name(node.tag) == "docTitle"), None,
+            )
+            source_book_title = ""
+            if source_doc_title is not None:
+                source_title_text = next(
+                    (node for node in source_doc_title.iter() if local_name(node.tag) == "text"), None,
+                )
+                source_book_title = (
+                    visible_text(source_title_text) if source_title_text is not None else ""
+                )
+            source_text_nodes = [node for node in source_nodes if local_name(node.tag) == "text"]
+            target_text_nodes = [node for node in target_nodes if local_name(node.tag) == "text"]
+            for source_text, target_text in zip(source_text_nodes, target_text_nodes):
+                if id(source_text) in handled_source_texts:
+                    continue
+                expected = document_title_replacement(
+                    visible_text(source_text), rel, heading_map, ui,
+                    source_book_title, target_book_title,
+                )
+                if expected and visible_text(target_text) != normalize_space(expected):
+                    errors.append(
+                        f"NCX document label was not localized in {rel}: "
+                        f"{visible_text(source_text)!r}"
+                    )
             continue
         for source, target in zip(source_nodes, target_nodes):
             if local_name(source.tag) in {"h1", "h2", "h3", "title"}:
