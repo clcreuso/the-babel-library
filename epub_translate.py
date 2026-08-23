@@ -2062,10 +2062,17 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             set_visible_text(target, replacement)
     root = target_tree.getroot()
     if root.attrib.get("lang"):
-        root.attrib["lang"] = ui.get("__code__", root.attrib["lang"])
+        target_lang = ui.get("__code__", root.attrib["lang"])
+        if root.attrib["lang"] != target_lang:
+            root.attrib["lang"] = target_lang
+            synchronized = True
     if root.attrib.get(XML_LANG):
-        root.attrib[XML_LANG] = ui.get("__code__", root.attrib[XML_LANG])
-    write_tree(target_tree, target_path)
+        target_lang = ui.get("__code__", root.attrib[XML_LANG])
+        if root.attrib[XML_LANG] != target_lang:
+            root.attrib[XML_LANG] = target_lang
+            synchronized = True
+    if synchronized:
+        write_tree(target_tree, target_path)
     return synchronized
 
 
