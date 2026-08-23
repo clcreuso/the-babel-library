@@ -125,6 +125,12 @@ img.figure {
 
             applied = pipeline.apply(paths)
             self.assertEqual(applied["applied_segments"], len(segments))
+            manifest_rows = pipeline.read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
+            chapter_row = next(
+                row for row in manifest_rows if row["relative_path"] == "OEBPS/ch01.xhtml"
+            )
+            chapter_row.update({"category": "preserve", "status": "preserved"})
+            pipeline.write_jsonl(paths["jobs"] / "translation_manifest.jsonl", manifest_rows)
             editorial_dir = paths["jobs"] / "editorial"
             editorial_dir.mkdir(parents=True)
             decision = {
@@ -143,6 +149,7 @@ img.figure {
                 },
                 "front_matter_replacements": [
                     {"source": "Object Design", "target": "Conception objet"},
+                    {"source": "Cover", "target": "Couverture éditoriale"},
                 ],
                 "notes": ["Titre et sous-titre harmonisés."],
             }
@@ -153,6 +160,16 @@ img.figure {
             paths["final"].write_bytes(b"stale-final")
             editorial = pipeline.editorial(paths, "medium", resume=True, cover_image=localized_cover)
             self.assertEqual(editorial["cover_status"], "localized")
+            editorial_manifest = pipeline.read_jsonl(
+                paths["jobs"] / "translation_manifest.jsonl"
+            )
+            chapter_row = next(
+                row for row in editorial_manifest if row["relative_path"] == "OEBPS/ch01.xhtml"
+            )
+            self.assertEqual(chapter_row["category"], "editorial")
+            self.assertEqual(
+                chapter_row["reason"], "editorially synchronized reader-facing metadata",
+            )
             cover_prompt = (editorial_dir / "cover_prompt.md").read_text(encoding="utf-8")
             self.assertIn("Every visible text region not explicitly listed", cover_prompt)
             self.assertIn("unlisted endorsements", cover_prompt)
@@ -172,7 +189,10 @@ img.figure {
                 (paths["jobs"] / "validation.json").read_text(encoding="utf-8")
             )
             self.assertTrue(any("cover metadata" in error for error in broken_validation["errors"]))
-            pipeline.editorial(paths, "medium", resume=True, cover_image=localized_cover)
+            resumed_editorial = pipeline.editorial(
+                paths, "medium", resume=True, cover_image=localized_cover,
+            )
+            self.assertIn("OEBPS/ch01.xhtml", resumed_editorial["front_matter_files"])
             validation = pipeline.validate(paths)
             self.assertEqual(validation["errors"], [])
             result = pipeline.build(paths)
@@ -193,7 +213,7 @@ img.figure {
                 self.assertIn("Gear", "".join(chapter.itertext()))
                 self.assertIn('puts "Hello world"', "".join(chapter.itertext()))
                 self.assertIn("Conception objet", "".join(nav.itertext()))
-                self.assertIn("Couverture", "".join(nav.itertext()))
+                self.assertIn("Couverture éditoriale", "".join(nav.itertext()))
                 nav_title = next(node for node in nav.iter() if pipeline.local_name(node.tag) == "title")
                 self.assertEqual(nav_title.text, "Petit livre : conception objet : Table des matières")
                 self.assertIn("Conception objet", "".join(ncx.itertext()))
@@ -659,6 +679,53 @@ img.figure {
             self.assertGreaterEqual(resumed["worker_seconds"], 2.0)
             history = pipeline.read_jsonl(paths["jobs"] / "translation_run_history.jsonl")
             self.assertEqual(len(history), 2)
+
+    def test_interrupted_translation_finalizes_started_history_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            epub = self.create_fixture(root)
+            paths = pipeline.project_paths(epub, "fr", books_root=root / "books")
+            pipeline.prepare(epub, "French", "fr", paths, force=False, resume=False)
+
+            def interrupt_worker(*_args, **_kwargs):
+                raise KeyboardInterrupt("simulated user interruption")
+
+            with patch.object(pipeline, "run_one_batch", side_effect=interrupt_worker):
+                with self.assertRaisesRegex(KeyboardInterrupt, "simulated user interruption"):
+                    pipeline.translate(
+                        paths, workers=2, batch_tokens=100000, repair_tokens=1000,
+                        max_retries=0, reasoning_effort="low",
+                    )
+
+            history = pipeline.read_jsonl(paths["jobs"] / "translation_run_history.jsonl")
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["status"], "interrupted")
+            self.assertEqual(history[0]["interruption"]["type"], "KeyboardInterrupt")
+            self.assertIn("run_id", history[0])
+            self.assertEqual(history[0]["run_number"], 1)
+            self.assertIn("Status: interrupted", (
+                paths["jobs"] / "translation_progress.md"
+            ).read_text(encoding="utf-8"))
+
+    def test_record_translation_run_updates_same_run_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = Path(directory) / "jobs"
+            jobs.mkdir()
+            paths = {"jobs": jobs}
+            pipeline.record_translation_run(
+                paths, {"status": "running", "initial_batches": 0, "attempts": []},
+                run_id="stable-run",
+            )
+            aggregate = pipeline.record_translation_run(
+                paths, {"status": "complete", "initial_batches": 2, "attempts": []},
+                run_id="stable-run",
+            )
+            history = pipeline.read_jsonl(jobs / "translation_run_history.jsonl")
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["status"], "complete")
+            self.assertEqual(history[0]["run_number"], 1)
+            self.assertEqual(aggregate["runs"], 1)
+            self.assertEqual(aggregate["initial_batches"], 2)
 
     def test_legacy_run_summary_migrates_with_distinct_run_numbers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1129,6 +1196,71 @@ img.figure {
             ]
             self.assertEqual(labels, ["1. Partie 1 : prise en main"])
 
+    def test_navigation_adapts_when_label_omits_heading_ordinal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original"
+            working = root / "working"
+            original.mkdir()
+            working.mkdir()
+            source_chapter = original / "chapter.xhtml"
+            target_chapter = working / "chapter.xhtml"
+            source_chapter.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2 id="introduction">1. INTRODUCTION, OVERVIEW, AND SUMMARY</h2>
+</body></html>""", encoding="utf-8")
+            target_chapter.write_text("""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<h2 id="introduction">1. INTRODUCTION, VUE D’ENSEMBLE ET RÉSUMÉ</h2>
+</body></html>""", encoding="utf-8")
+            heading_map = pipeline.id_heading_map(
+                original, working, ["chapter.xhtml"],
+            )
+            self.assertEqual(
+                pipeline.navigation_label_replacement(
+                    "Introduction, Overview, and Summary",
+                    "chapter.xhtml#introduction", "nav.xhtml", heading_map,
+                    {"__code__": "fr"},
+                ),
+                "INTRODUCTION, VUE D’ENSEMBLE ET RÉSUMÉ",
+            )
+            self.assertEqual(
+                pipeline.translated_label(
+                    "Life and Death", "IV — Life and Death", "IV — Vie et mort",
+                ),
+                "Vie et mort",
+            )
+            self.assertIsNone(
+                pipeline.translated_label(
+                    "Publisher Introduction", "1. Introduction", "1. Introduction",
+                )
+            )
+
+            source_nav = original / "nav.xhtml"
+            target_nav = working / "nav.xhtml"
+            nav = """<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><nav><ol><li>
+<a href="chapter.xhtml#introduction">Introduction, Overview, and Summary</a>
+</li></ol></nav></body></html>"""
+            source_nav.write_text(nav, encoding="utf-8")
+            target_nav.write_text(nav, encoding="utf-8")
+            ui = {"__code__": "fr"}
+            self.assertEqual(
+                len(pipeline.navigation_sync_errors(
+                    original, working, ["nav.xhtml"], heading_map, ui, "Book", "Livre",
+                )),
+                1,
+            )
+            pipeline.sync_xhtml_links(
+                source_nav, target_nav, "nav.xhtml", heading_map, ui, "Book", "Livre",
+            )
+            self.assertEqual(
+                pipeline.navigation_sync_errors(
+                    original, working, ["nav.xhtml"], heading_map, ui, "Book", "Livre",
+                ),
+                [],
+            )
+
     def test_navigation_composes_split_headings_and_book_title_suffixes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1370,12 +1502,46 @@ img.figure {
             batch = [pipeline.read_jsonl(paths["jobs"] / "segments.jsonl")[0]]
             template = "Translate."
             glossary = "Preserve code."
-            with patch.object(pipeline.subprocess, "run", side_effect=subprocess.TimeoutExpired("codex", 1)):
+            with patch.object(
+                pipeline, "run_codex_command",
+                side_effect=subprocess.TimeoutExpired("codex", 1),
+            ):
                 result = pipeline.run_one_batch(
                     paths, project, template, glossary, "timeout", batch, "low", 0, timeout=1,
                 )
             self.assertIn("timed out", result["error"])
             self.assertEqual(set(result["invalid"]), {batch[0]["id"]})
+
+    def test_timed_out_codex_command_terminates_its_process_group(self):
+        class TimedOutProcess:
+            pid = 4242
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("codex", timeout)
+                return -15
+
+            def poll(self):
+                return None if self.wait_calls < 2 else -15
+
+        process = TimedOutProcess()
+        pipeline.reset_codex_worker_cancellation()
+        with (
+            patch.object(pipeline.subprocess, "Popen", return_value=process) as popen,
+            patch.object(pipeline.os, "killpg") as killpg,
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                pipeline.run_codex_command(
+                    ["codex", "exec"], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1,
+                )
+        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+        killpg.assert_called_once_with(4242, pipeline.signal.SIGTERM)
+        self.assertNotIn(process, pipeline._ACTIVE_CODEX_PROCESSES)
 
     def test_usage_limit_log_is_classified_as_terminal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1391,7 +1557,7 @@ img.figure {
                 )
                 return SimpleNamespace(returncode=1)
 
-            with patch.object(pipeline.subprocess, "run", side_effect=fake_process):
+            with patch.object(pipeline, "run_codex_command", side_effect=fake_process):
                 result = pipeline.run_one_batch(
                     paths, project, "Translate.", "Preserve code.", "quota", batch, "low", 0,
                 )
@@ -1419,7 +1585,7 @@ img.figure {
                 (paths["jobs"] / "reports" / "malformed.json").write_text("not json", encoding="utf-8")
                 return SimpleNamespace(returncode=0)
 
-            with patch.object(pipeline.subprocess, "run", side_effect=fake_process):
+            with patch.object(pipeline, "run_codex_command", side_effect=fake_process):
                 result = pipeline.run_one_batch(
                     paths, project, "Translate.", "Preserve code.", "malformed", batch, "low", 0,
                 )

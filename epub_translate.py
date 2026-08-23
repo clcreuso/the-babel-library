@@ -10,14 +10,17 @@ import html.entities
 import json
 import os
 import re
+import signal
 import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from collections import Counter, defaultdict
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import xml.etree.ElementTree as ET
@@ -150,6 +153,20 @@ def namespace(tag: object) -> str:
 
 def normalize_space(text: str | None) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def navigation_ui_translations(target_code: str, decision: dict | None = None) -> dict[str, str]:
+    """Combine generic reader labels with exact AI-approved editorial replacements."""
+    translations = dict(UI_TRANSLATIONS.get(target_code, {}))
+    if decision:
+        translations.update({
+            normalize_space(replacement["source"]): normalize_space(replacement["target"])
+            for replacement in decision.get("front_matter_replacements", [])
+            if normalize_space(replacement.get("source"))
+            and normalize_space(replacement.get("target"))
+        })
+    translations["__code__"] = target_code
+    return translations
 
 
 def clean_metadata_text(text: str | None) -> str:
@@ -1062,6 +1079,92 @@ def codex_model_args() -> list[str]:
     return ["--model", model] if model else []
 
 
+_ACTIVE_CODEX_PROCESSES: set[subprocess.Popen] = set()
+_ACTIVE_CODEX_LOCK = threading.Lock()
+_CODEX_WORKERS_CANCELLED = threading.Event()
+
+
+def reset_codex_worker_cancellation() -> None:
+    """Allow a new translation wave after a previous invocation was cancelled."""
+    with _ACTIVE_CODEX_LOCK:
+        _CODEX_WORKERS_CANCELLED.clear()
+
+
+def terminate_codex_process(process: subprocess.Popen, grace_seconds: float = 1.0) -> None:
+    """Terminate a Codex CLI and its descendants without targeting unrelated processes."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=grace_seconds)
+        return
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait(timeout=grace_seconds)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        pass
+
+
+def cancel_active_codex_workers() -> None:
+    """Prevent new workers from starting and stop every worker owned by this process."""
+    with _ACTIVE_CODEX_LOCK:
+        _CODEX_WORKERS_CANCELLED.set()
+        active = list(_ACTIVE_CODEX_PROCESSES)
+    for process in active:
+        terminate_codex_process(process)
+
+
+def run_codex_command(command: list[str], *, stdin, stdout, stderr,
+                      timeout: int) -> subprocess.CompletedProcess:
+    """Run a cancellable Codex CLI process in its own process group."""
+    popen_options: dict[str, object] = {}
+    if os.name == "posix":
+        popen_options["start_new_session"] = True
+    elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    with _ACTIVE_CODEX_LOCK:
+        if _CODEX_WORKERS_CANCELLED.is_set():
+            raise RuntimeError("Codex worker cancelled before launch")
+        process = subprocess.Popen(
+            command, stdin=stdin, stdout=stdout, stderr=stderr, **popen_options,
+        )
+        _ACTIVE_CODEX_PROCESSES.add(process)
+    try:
+        return_code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        terminate_codex_process(process)
+        raise
+    finally:
+        with _ACTIVE_CODEX_LOCK:
+            _ACTIVE_CODEX_PROCESSES.discard(process)
+    return subprocess.CompletedProcess(command, return_code)
+
+
+@contextmanager
+def cancellable_codex_worker_pool(max_workers: int, on_interruption):
+    """Stop owned subprocesses before waiting for worker threads on an interruption."""
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        yield executor
+    except BaseException as exc:
+        cancel_active_codex_workers()
+        executor.shutdown(wait=True, cancel_futures=True)
+        on_interruption(exc)
+        raise
+    else:
+        executor.shutdown(wait=True)
+
+
 def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary: str, batch_id: str,
                   batch: list[dict], reasoning_effort: str, attempt: int,
                   repair_reasons: dict[str, str] | None = None,
@@ -1082,7 +1185,7 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
     started = time.time()
     try:
         with prompt_path.open("rb") as stdin, log_path.open("wb") as stderr:
-            process = subprocess.run(
+            process = run_codex_command(
                 command, stdin=stdin, stdout=subprocess.DEVNULL, stderr=stderr, timeout=timeout,
             )
     except subprocess.TimeoutExpired:
@@ -1139,8 +1242,9 @@ def run_one_batch(paths: dict[str, Path], project: dict, template: str, glossary
     return result
 
 
-def record_translation_run(paths: dict[str, Path], current: dict) -> dict:
-    """Persist each invocation and expose cumulative effort without losing resume history."""
+def record_translation_run(paths: dict[str, Path], current: dict,
+                           run_id: str | None = None) -> dict:
+    """Persist or finalize an invocation and expose cumulative effort."""
     history_path = paths["jobs"] / "translation_run_history.jsonl"
     summary_path = paths["jobs"] / "translation_run.json"
     history: list[dict] = []
@@ -1173,9 +1277,29 @@ def record_translation_run(paths: dict[str, Path], current: dict) -> dict:
             legacy_snapshot.setdefault("run_number", 1)
             history.append(legacy_snapshot)
     snapshot = dict(current)
-    snapshot["run_number"] = max((int(row.get("run_number", 0)) for row in history), default=0) + 1
-    snapshot["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    history.append(snapshot)
+    recorded_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    existing_index = next(
+        (
+            index for index, row in enumerate(history)
+            if run_id and row.get("run_id") == run_id
+        ),
+        None,
+    )
+    if run_id:
+        snapshot["run_id"] = run_id
+    if existing_index is None:
+        snapshot["run_number"] = max(
+            (int(row.get("run_number", 0)) for row in history), default=0,
+        ) + 1
+        snapshot.setdefault("started_at", recorded_at)
+        snapshot["recorded_at"] = recorded_at
+        history.append(snapshot)
+    else:
+        previous = history[existing_index]
+        snapshot["run_number"] = int(previous.get("run_number", existing_index + 1))
+        snapshot.setdefault("started_at", previous.get("started_at", previous.get("recorded_at", recorded_at)))
+        snapshot["recorded_at"] = recorded_at
+        history[existing_index] = snapshot
     write_jsonl_atomic(history_path, history)
 
     aggregate = dict(snapshot)
@@ -1270,6 +1394,71 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
     pending_reasons: dict[str, str] = {}
     blocking_failure: dict[str, object] | None = None
     template = Path(__file__).with_name("translate_epub_file.md").read_text(encoding="utf-8")
+    run_id = f"translation-{time.time_ns()}-{os.getpid()}"
+
+    def run_stats(status: str, failures: list[str]) -> dict:
+        return {
+            "status": status,
+            "segments": len(segments),
+            "unique_pending_segments": len(unique_pending),
+            "already_completed": already_completed,
+            "completed_segments": len(completed),
+            "memory_hits": memory_hits,
+            "deduplicated": len(aliases),
+            "initial_batches": initial_batches,
+            "repair_batches": repair_batches,
+            "batch_attempts": len(results),
+            "first_pass_invalid": first_pass_invalid,
+            "external_blocked_segments": external_blocked_segments,
+            "repair_segments_submitted": repair_segments_submitted,
+            "salvaged_valid_segments": salvaged_segments,
+            "workers": workers,
+            "batch_tokens": batch_tokens,
+            "repair_tokens": repair_tokens,
+            "reasoning_effort": reasoning_effort,
+            "glossary_version": glossary_version,
+            "wall_seconds": round(time.time() - translation_started, 1),
+            "worker_seconds": round(sum(float(row.get("seconds", 0)) for row in results), 1),
+            "source_tokens_submitted_estimated": sum(
+                int(row.get("source_tokens_estimated", 0)) for row in results
+            ),
+            "prompt_tokens_submitted_estimated": sum(
+                int(row.get("prompt_tokens_estimated", 0)) for row in results
+            ),
+            "report_tokens_estimated": sum(
+                int(row.get("report_tokens_estimated", 0)) for row in results
+            ),
+            "attempts": list(attempt_metrics),
+            "failures": failures,
+            "blocking_failure": blocking_failure,
+        }
+
+    reset_codex_worker_cancellation()
+    record_translation_run(
+        paths,
+        run_stats("running", [segment["id"] for segment in unique_pending]),
+        run_id=run_id,
+    )
+
+    def record_interruption(exc: BaseException) -> None:
+        write_jsonl_atomic(translations_path, [completed[key] for key in sorted(completed)])
+        write_json_atomic(paths["jobs"] / "batch_results.json", results)
+        remaining = [segment["id"] for segment in segments if segment["id"] not in completed]
+        status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed"
+        interrupted_stats = run_stats(status, remaining)
+        interrupted_stats["interruption"] = {
+            "type": type(exc).__name__,
+            "detail": clean_metadata_text(str(exc)) or type(exc).__name__,
+        }
+        aggregate = record_translation_run(paths, interrupted_stats, run_id=run_id)
+        (paths["jobs"] / "translation_progress.md").write_text(
+            "# Fast EPUB translation\n\n"
+            f"- Status: {status}\n"
+            f"- Completed segments: {len(completed)} / {len(segments)}\n"
+            f"- Recorded runs: {aggregate.get('runs', 1)}\n"
+            f"- Interruption: {type(exc).__name__}\n",
+            encoding="utf-8",
+        )
 
     for attempt in range(max_retries + 1):
         if not pending:
@@ -1309,7 +1498,9 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
         wave_started = time.time()
         valid_in_wave = 0
         blocked_in_wave = 0
-        with ThreadPoolExecutor(max_workers=min(max(1, workers), len(indexed_batches))) as executor:
+        with cancellable_codex_worker_pool(
+            min(max(1, workers), len(indexed_batches)), record_interruption,
+        ) as executor:
             futures = {
                 executor.submit(
                     run_one_batch, paths, project, template, glossary, batch_id, batch,
@@ -1370,6 +1561,7 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
                     for pending_future in futures:
                         if pending_future is not future and not pending_future.done():
                             pending_future.cancel()
+                    cancel_active_codex_workers()
                 results.append({k: v for k, v in result.items()
                                 if k not in {"translations", "invalid", "invalid_targets"}} | {
                     "valid_segments": len(translations),
@@ -1423,40 +1615,8 @@ def translate(paths: dict[str, Path], workers: int, batch_tokens: int, repair_to
     merge_memory_atomic(paths["global_memory"], memory_updates)
     write_json_atomic(paths["jobs"] / "batch_results.json", results)
 
-    wall_seconds = round(time.time() - translation_started, 1)
-    worker_seconds = round(sum(float(row.get("seconds", 0)) for row in results), 1)
-    source_tokens_submitted = sum(int(row.get("source_tokens_estimated", 0)) for row in results)
-    prompt_tokens_submitted = sum(int(row.get("prompt_tokens_estimated", 0)) for row in results)
-    report_tokens_estimated = sum(int(row.get("report_tokens_estimated", 0)) for row in results)
-    stats = {
-        "status": "blocked_external" if blocking_failure else ("incomplete" if failures else "complete"),
-        "segments": len(segments),
-        "unique_pending_segments": len(unique_pending),
-        "already_completed": already_completed,
-        "memory_hits": memory_hits,
-        "deduplicated": len(aliases),
-        "initial_batches": initial_batches,
-        "repair_batches": repair_batches,
-        "batch_attempts": len(results),
-        "first_pass_invalid": first_pass_invalid,
-        "external_blocked_segments": external_blocked_segments,
-        "repair_segments_submitted": repair_segments_submitted,
-        "salvaged_valid_segments": salvaged_segments,
-        "workers": workers,
-        "batch_tokens": batch_tokens,
-        "repair_tokens": repair_tokens,
-        "reasoning_effort": reasoning_effort,
-        "glossary_version": glossary_version,
-        "wall_seconds": wall_seconds,
-        "worker_seconds": worker_seconds,
-        "source_tokens_submitted_estimated": source_tokens_submitted,
-        "prompt_tokens_submitted_estimated": prompt_tokens_submitted,
-        "report_tokens_estimated": report_tokens_estimated,
-        "attempts": attempt_metrics,
-        "failures": failures,
-        "blocking_failure": blocking_failure,
-    }
-    stats = record_translation_run(paths, stats)
+    status = "blocked_external" if blocking_failure else ("incomplete" if failures else "complete")
+    stats = record_translation_run(paths, run_stats(status, failures), run_id=run_id)
     blocker_line = ""
     if blocking_failure:
         blocker_line = (
@@ -1679,11 +1839,34 @@ def flexible_navigation_match(value: str, expected: str, *, at_start: bool = Fal
     return re.search(pattern, normalize_space(value).casefold())
 
 
+def without_leading_navigation_ordinal(value: str) -> str | None:
+    """Remove only an unambiguous numbered heading prefix.
+
+    Navigation labels often omit the ``1.`` or ``2.3`` that is visible in the
+    destination heading. Requiring a numeric/roman token followed by explicit
+    separator punctuation keeps this useful adaptation deterministic: prose
+    words and publisher-specific prefixes are never guessed away.
+    """
+    match = re.match(
+        r"^\s*(?:\d+(?:\.\d+)*|[ivxlcdm]+)\s*[.):\-–—]\s*(?P<title>\S.*)$",
+        normalize_space(value), flags=re.I,
+    )
+    return normalize_space(match.group("title")) if match else None
+
+
 def translated_label(source_label: str, source_title: str, target_title: str) -> str | None:
     source_label_n = normalize_space(source_label)
     source_title_n = normalize_space(source_title)
     if comparable_navigation_text(source_label_n) == comparable_navigation_text(source_title_n):
         return target_title
+    source_without_ordinal = without_leading_navigation_ordinal(source_title_n)
+    target_without_ordinal = without_leading_navigation_ordinal(target_title)
+    if (
+        source_without_ordinal and target_without_ordinal
+        and comparable_navigation_text(source_label_n)
+        == comparable_navigation_text(source_without_ordinal)
+    ):
+        return target_without_ordinal
     suffix_match = flexible_navigation_match(source_label_n, source_title_n, at_end=True)
     if suffix_match:
         prefix = source_label_n[:suffix_match.start()]
@@ -1845,11 +2028,12 @@ def document_title_replacement(source_label: str, rel: str,
 
 def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
                      heading_map: dict[tuple[str, str], tuple[str, str]], ui: dict[str, str],
-                     source_book_title: str = "", target_book_title: str = "") -> None:
+                     source_book_title: str = "", target_book_title: str = "") -> bool:
     source_tree, target_tree = parse_xml(source_path), parse_xml(target_path)
     source_nodes, target_nodes = list(source_tree.getroot().iter()), list(target_tree.getroot().iter())
     if len(source_nodes) != len(target_nodes):
         raise RuntimeError(f"Cannot synchronize navigation structure for {rel}")
+    synchronized = False
     for source, target in zip(source_nodes, target_nodes):
         if local_name(source.tag) not in {"a", "h1", "h2", "h3", "title"}:
             continue
@@ -1862,6 +2046,7 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             # their spans and line breaks. Plain headings can be harmonized
             # safely with the canonical navigation wording.
             if replacement and len(target) == 0:
+                synchronized = True
                 set_visible_text(target, replacement)
             continue
         href = source.attrib.get("href")
@@ -1873,6 +2058,7 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
             for node in target.iter()
         )
         if replacement and not protected_descendant:
+            synchronized = True
             set_visible_text(target, replacement)
     root = target_tree.getroot()
     if root.attrib.get("lang"):
@@ -1880,6 +2066,7 @@ def sync_xhtml_links(source_path: Path, target_path: Path, rel: str,
     if root.attrib.get(XML_LANG):
         root.attrib[XML_LANG] = ui.get("__code__", root.attrib[XML_LANG])
     write_tree(target_tree, target_path)
+    return synchronized
 
 
 def sync_ncx(source_path: Path, target_path: Path, rel: str,
@@ -3306,11 +3493,16 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
             node.attrib["content"] = clean_metadata_text(node.attrib["content"])
     cover_declaration = normalize_cover_declaration(root, project["opf"], cover_rel)
     write_tree(tree, opf_path)
-    changed_front_matter = replace_front_matter_labels(paths, project, decision)
+    changed_front_matter = set(replace_front_matter_labels(paths, project, decision))
     manifest_rows = read_jsonl(paths["jobs"] / "translation_manifest.jsonl")
-    for row in manifest_rows:
-        if row["relative_path"] in changed_front_matter and row["category"] == "preserve":
-            row.update({"category": "editorial", "reason": "editorially corrected front matter", "status": "pending"})
+    changed_front_matter.update(
+        row["relative_path"] for row in manifest_rows
+        if row["category"] == "editorial"
+        and row.get("reason") == "editorially synchronized reader-facing metadata"
+    )
+    preserved_rels = {
+        row["relative_path"] for row in manifest_rows if row["category"] == "preserve"
+    }
 
     items, serial, _ = media_inventory(paths["working"], project["opf"])
     content_rels = [
@@ -3318,14 +3510,16 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
         if item["media_type"] in {"application/xhtml+xml", "application/x-dtbook+xml"} and rel not in serial
     ]
     heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
-    ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
-    ui["__code__"] = project["target_language_code"]
+    ui = navigation_ui_translations(project["target_language_code"], decision)
     source_title = translated_book_title(paths["original"] / project["opf"])
     for rel in content_rels:
-        sync_xhtml_links(
-            paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
+        target_path = paths["working"] / rel
+        synchronized = sync_xhtml_links(
+            paths["original"] / rel, target_path, rel, heading_map, ui,
             source_title, decision["full_title"],
         )
+        if synchronized and rel in preserved_rels:
+            changed_front_matter.add(rel)
     for rel in serial:
         if rel == project["opf"] or not (paths["working"] / rel).exists():
             continue
@@ -3340,6 +3534,14 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
                 paths["original"] / rel, paths["working"] / rel, rel, heading_map, ui,
                 source_title, decision["full_title"],
             )
+
+    for row in manifest_rows:
+        if row["relative_path"] in changed_front_matter and row["category"] == "preserve":
+            row.update({
+                "category": "editorial",
+                "reason": "editorially synchronized reader-facing metadata",
+                "status": "pending",
+            })
 
     cover_status = "preserved"
     cover_warnings: list[str] = []
@@ -3392,7 +3594,7 @@ def apply_editorial_metadata(paths: dict[str, Path], project: dict, decision: di
     write_jsonl(paths["jobs"] / "translation_manifest.jsonl", manifest_rows)
     return {
         "metadata": decision,
-        "front_matter_files": changed_front_matter,
+        "front_matter_files": sorted(changed_front_matter),
         "cover_resource": cover_rel,
         "cover_status": cover_status,
         "cover_declaration": cover_declaration,
@@ -3510,8 +3712,7 @@ def apply(paths: dict[str, Path]) -> dict:
     items, serial, _ = media_inventory(paths["original"], project["opf"])
     content_rels = [rel for rel, item in items.items() if item["media_type"] in {"application/xhtml+xml", "application/x-dtbook+xml"} and rel not in serial]
     heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
-    ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
-    ui["__code__"] = project["target_language_code"]
+    ui = navigation_ui_translations(project["target_language_code"])
     source_title = translated_book_title(paths["original"] / project["opf"])
     title = translated_book_title(paths["working"] / project["opf"])
     translated_content_rels = [rel for rel in content_rels if rel in by_file]
@@ -3727,10 +3928,12 @@ def validate(paths: dict[str, Path]) -> dict:
         if local_name(node.tag) == "meta" and INVISIBLE_METADATA_RE.search(node.attrib.get("content", "")):
             errors.append(f"Invisible formatting character remains in meta:{node.attrib.get('name', '')}")
     editorial_report_path = paths["jobs"] / "editorial" / "editorial_report.json"
+    editorial_decision: dict = {}
     if editorial_report_path.exists():
         editorial_report = json.loads(editorial_report_path.read_text(encoding="utf-8"))
         warnings.extend(str(value) for value in editorial_report.get("warnings", []) if str(value))
         decision = editorial_report.get("metadata", {})
+        editorial_decision = decision if isinstance(decision, dict) else {}
         title = next((visible_text(node) for node in opf_root.iter()
                       if local_name(node.tag) == "title" and namespace(node.tag) == DC_NS), "")
         if decision.get("full_title") and title != decision["full_title"]:
@@ -3778,7 +3981,7 @@ def validate(paths: dict[str, Path]) -> dict:
         if item["media_type"] in {"application/xhtml+xml", "application/x-dtbook+xml"} and rel not in serial
     ]
     heading_map = id_heading_map(paths["original"], paths["working"], content_rels)
-    ui = dict(UI_TRANSLATIONS.get(project["target_language_code"], {}))
+    ui = navigation_ui_translations(project["target_language_code"], editorial_decision)
     source_title = translated_book_title(paths["original"] / project["opf"])
     target_title = translated_book_title(paths["working"] / project["opf"])
     errors.extend(navigation_sync_errors(

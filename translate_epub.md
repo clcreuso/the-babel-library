@@ -171,6 +171,9 @@ Chaque invocation est aussi ajoutée à `translation_run_history.jsonl`. Le rés
 fait presque rien n’efface donc plus l’histoire de la traduction. Si une limite d’usage ou un
 problème d’authentification est reconnu avec certitude, le pipeline conserve le travail valide,
 s’arrête sans gaspiller les tentatives de réparation et indique qu’une reprise ultérieure est possible.
+L’entrée d’historique est créée dès le démarrage puis finalisée sur place. Une interruption conserve
+ainsi un état `interrupted`, arrête uniquement les processus Codex appartenant à cette exécution et
+laisse les traductions déjà validées disponibles pour `--resume`.
 Si une ligne de l’historique a été corrompue par une édition externe, les lignes valides sont
 récupérées et le JSONL original est conservé dans une sauvegarde horodatée `.corrupt-*`.
 
@@ -260,6 +263,8 @@ bloque pas automatiquement une décision visuelle pertinente.
 
 La navigation EPUB, le NCX et les références de titres sont générés à partir des titres traduits
 validés plutôt que retraduits séparément. Le synchroniseur sait recomposer les libellés formés de
-plusieurs titres successifs et d’un titre de livre en préfixe ou suffixe. Les titres XHTML qui ne
+plusieurs titres successifs, d’un titre de livre en préfixe ou suffixe, ou d’un titre dont le numéro
+de section est omis dans le sommaire. Les libellés propres au livre proviennent des remplacements
+approuvés par la passe éditoriale IA ; ils ne sont pas figés dans le code. Les titres XHTML qui ne
 peuvent pas être déduits de cette structure restent des segments confiés à l’IA. Cette séparation
 évite les variations terminologiques sans introduire de règle propre à un livre.
