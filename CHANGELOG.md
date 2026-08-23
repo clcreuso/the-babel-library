@@ -4,6 +4,12 @@ All notable changes to this project will be documented here.
 
 ## Unreleased
 
+- Adopted The Babel Library as the canonical project identity and preserved the original Node.js
+  implementation and its complete history under the `legacy-node-v1` tag.
+- Made Codex worker processes explicitly cancellable, retained validated partial work when an
+  invocation is interrupted, and finalized the same translation-history record on exit.
+- Let AI-approved editorial replacements synchronize book-specific navigation labels without
+  hard-coded translations, including labels that omit a heading ordinal.
 - Translated reader-facing XHTML document titles and generalized navigation synchronization for
   labels composed from multiple headings or a book title in prefix/suffix position; unresolved
   wording remains model-authored and the same resolver now backs validation.

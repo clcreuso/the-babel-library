@@ -1,9 +1,15 @@
-# codex-epub-translator
+# The Babel Library
 
-[![Tests](https://github.com/clcreuso/codex-epub-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/clcreuso/codex-epub-translator/actions/workflows/tests.yml)
+[![Tests](https://github.com/clcreuso/the-babel-library/actions/workflows/tests.yml/badge.svg)](https://github.com/clcreuso/the-babel-library/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A fast, resumable EPUB translation pipeline powered by the Codex CLI.
+**A Codex-powered EPUB translator.** The Babel Library is a fast, resumable translation pipeline
+for producing structurally valid EPUBs while preserving markup, metadata, navigation, and artwork.
+
+> [!NOTE]
+> The project was rebuilt in 2026 from its original Node.js/OpenAI API implementation into the
+> current Python/Codex CLI pipeline. The complete original code and history remain available in the
+> [`legacy-node-v1`](https://github.com/clcreuso/the-babel-library/tree/legacy-node-v1) tag.
 
 The translator extracts reader-visible text into balanced JSON batches, runs parallel output-only Codex workers, safely restores inline markup, performs separate editorial metadata and bounded style-compatibility reviews, validates the translated EPUB, and rebuilds a standards-compliant archive.
 
@@ -49,8 +55,8 @@ codex --version
 Clone the repository and open its folder in Codex:
 
 ```sh
-git clone https://github.com/clcreuso/codex-epub-translator.git
-cd codex-epub-translator
+git clone https://github.com/clcreuso/the-babel-library.git
+cd the-babel-library
 ```
 
 The EPUB may be anywhere on your machine, including outside the repository. Send this message in Codex:

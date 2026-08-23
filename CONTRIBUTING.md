@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping improve `codex-epub-translator`.
+Thank you for helping improve The Babel Library.
 
 ## Before opening a pull request
 
